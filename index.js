@@ -8,57 +8,60 @@ const http = require('http');
 const authRoutes = require('./auth'); // Adjust path if needed
 const rideRoutes = require('./rides'); // Adjust path if needed
 
-console.log('Starting server...');
 require('dotenv').config();
-console.log('Dotenv config loaded');
+console.log('Starting server...');
 
-// Debug environment variables
-console.log('Environment variables:', {
-  SUPABASE_URL: process.env.SUPABASE_URL,
-  SUPABASE_KEY: process.env.SUPABASE_KEY
-});
+// Ensure required environment variables are set
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
+  console.error('Missing Supabase environment variables');
+  process.exit(1);
+}
 
 const app = express();
-console.log('Express app created');
 const server = http.createServer(app);
+
 const allowedOrigins = [
   'http://localhost:3000',
   process.env.EXPO_APP_URL || 'exp://.*', // Allow all Expo tunnel URLs
   'https://dropme-backend.onrender.com'  // Your Render URL
 ].filter(Boolean);
 
-const io = new Server(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
+// CORS Configuration
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.some((o) => origin.startsWith(o))) {
+      return callback(null, true);
+    }
+    callback(new Error('Not allowed by CORS'));
   },
-});
-
-app.use(cors({
-  origin: allowedOrigins,
   methods: ['GET', 'POST'],
-}));
+};
+
+app.use(cors(corsOptions));
+app.use(helmet());
+app.use(express.json());
+app.use(rateLimit({ windowMs: 60 * 1000, max: 60 })); // 60 requests per minute
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-console.log(supabase);
-
-app.use(helmet());
-app.use(express.json());
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
+console.log('Supabase client initialized');
 
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/rides', rideRoutes);
 app.get('/', (req, res) => res.send('Car Hailing Backend'));
 
-// Socket.IO events
+// Socket.IO setup
+const io = new Server(server, {
+  cors: corsOptions,
+});
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.on('updateLocation', async (data) => {
     console.log('Received updateLocation:', data);
-    const { userId, lat, lng, role } = data; // Changed userType to role for consistency
+    const { userId, lat, lng, role } = data; 
 
     try {
       if (!userId || isNaN(lat) || isNaN(lng)) {
@@ -66,18 +69,18 @@ io.on('connection', (socket) => {
       }
 
       const validRole = role === 'driver' || role === 'rider' ? role : 'rider';
-      const point = `POINT(${lng} ${lat})`;
+      const point = `ST_GeomFromText('POINT(${lng} ${lat})', 4326)`;
 
       const { error } = await supabase
         .from('user_locations')
         .upsert(
-          {
-            user_id: userId,
-            location: point,
-            role: validRole, // Use role here
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'user_id' }
+          [{ 
+            user_id: userId, 
+            location: supabase.raw(point), 
+            role: validRole, 
+            updated_at: new Date().toISOString() 
+          }],
+          { onConflict: ['user_id'] }
         );
 
       if (error) {
@@ -100,17 +103,20 @@ io.on('connection', (socket) => {
         throw new Error('Invalid riderData');
       }
 
-      const riderPoint = `POINT(${lng} ${lat})`;
+      const riderPoint = `ST_GeomFromText('POINT(${lng} ${lat})', 4326)`;
 
       // Save rider location
       const { error: upsertError } = await supabase
         .from('user_locations')
-        .upsert({
-          user_id: riderId,
-          location: riderPoint,
-          role: 'rider',
-          updated_at: new Date().toISOString(),
-        });
+        .upsert(
+          [{ 
+            user_id: riderId, 
+            location: supabase.raw(riderPoint), 
+            role: 'rider', 
+            updated_at: new Date().toISOString() 
+          }],
+          { onConflict: ['user_id'] }
+        );
 
       if (upsertError) {
         throw upsertError;
@@ -119,11 +125,10 @@ io.on('connection', (socket) => {
       // Fetch nearby drivers (within 10km)
       const { data, error } = await supabase
         .from('user_locations')
-        .select('user_id, location')
-        .eq('role', 'driver') // Changed userType to role
+        .select(`user_id, location, ST_DistanceSphere(location, ${supabase.raw(riderPoint)}) as distance`)
+        .eq('role', 'driver')
         .not('user_id', 'eq', riderId)
         .gt('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString()) // Last 5 mins
-        .select(`*, distance:st_distance(location, ST_GeomFromText('${riderPoint}', 4326))`)
         .lte('distance', 10000); // 10km radius
 
       if (error) {
@@ -143,11 +148,7 @@ io.on('connection', (socket) => {
   });
 });
 
-
-server.listen(3000, () => {
-  console.log('Server running on port 3000');
-});
-// Error Handling
+// Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send('Something went wrong!');
