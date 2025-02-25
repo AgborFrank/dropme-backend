@@ -22,10 +22,10 @@ const app = express();
 console.log('Express app created');
 const server = http.createServer(app);
 const allowedOrigins = [
-  'http://localhost:3000',           // Local Next.js (if applicable)
-  process.env.EXPO_APP_URL,          // Expo app (from .env or Render)
-  'https://dropme-backend.onrender.com' // Deployed backend
-].filter(Boolean); // Remove undefined values
+  'http://localhost:3000',
+  process.env.EXPO_APP_URL || 'exp://.*', // Allow all Expo tunnel URLs
+  'https://dropme-backend.onrender.com'  // Your Render URL
+].filter(Boolean);
 
 const io = new Server(server, {
   cors: {
