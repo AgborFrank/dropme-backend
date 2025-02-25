@@ -8,58 +8,44 @@ const http = require('http');
 const authRoutes = require('./auth'); // Adjust path if needed
 const rideRoutes = require('./rides'); // Adjust path if needed
 
-require('dotenv').config();
 console.log('Starting server...');
+require('dotenv').config();
+console.log('Dotenv config loaded');
+
+// Debug environment variables
 console.log('Environment variables:', {
   SUPABASE_URL: process.env.SUPABASE_URL,
-  SUPABASE_KEY: process.env.SUPABASE_KEY,
+  SUPABASE_KEY: process.env.SUPABASE_KEY
 });
 
 const app = express();
+console.log('Express app created');
 const server = http.createServer(app);
-
 const allowedOrigins = [
   'http://localhost:3000',
   process.env.EXPO_APP_URL || 'exp://.*', // Allow all Expo tunnel URLs
   'https://dropme-backend.onrender.com'  // Your Render URL
 ].filter(Boolean);
 
-// Socket.IO setup
 const io = new Server(server, {
   cors: {
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || origin.startsWith('exp://')) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
   },
 });
 
-// Middleware
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || origin.startsWith('exp://')) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: allowedOrigins,
   methods: ['GET', 'POST'],
 }));
-app.use(helmet());
-app.use(express.json());
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 })); // Rate limit HTTP requests
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-if (!supabase) {
-  console.error('Failed to initialize Supabase client');
-  process.exit(1);
-}
-console.log('Supabase client initialized');
+console.log(supabase);
+
+app.use(helmet());
+app.use(express.json());
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -157,14 +143,16 @@ io.on('connection', (socket) => {
   });
 });
 
-// Error handling middleware
+
+server.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
+// Error Handling
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send('Something went wrong!');
 });
 
-// Start server
+// Start Server
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
