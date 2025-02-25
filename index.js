@@ -52,26 +52,44 @@ app.use('/api/auth', authRoutes);
 app.use('/api/rides', rideRoutes);
 app.get('/', (req, res) => res.send('Car Hailing Backend'));
 
-// Socket.IO for real-time
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('disconnect', () => console.log('User disconnected:', socket.id));
+  socket.on('updateLocation', async (data) => {
+    console.log('Received updateLocation:', data);
+    const { userId, lat, lng } = data;
 
-  socket.on('updateLocation', async ({ userId, lat, lng }) => {
-    const { error } = await supabase
-      .from('users')
-      .update({ location: { type: 'Point', coordinates: [lng, lat] } })
-      .eq('id', userId);
-    if (error) {
-      console.error(error);
-    } else {
-      io.to(userId).emit('locationUpdated', { userId, lat, lng });
+    try {
+      // Format coordinates as a PostGIS POINT
+      const point = `POINT(${lng} ${lat})`; // Note: lng first, then lat (x, y order)
+
+      const { error } = await supabase
+        .from('driver_locations')
+        .insert({
+          user_id: userId,
+          location: point, // Assuming column name is 'location'
+          updated_at: new Date().toISOString(),
+        });
+
+      if (error) {
+        console.error('Error saving location:', error);
+        throw error; // Log the full error for debugging
+      } else {
+        console.log(`Saved location for user ${userId}`);
+      }
+    } catch (err) {
+      console.error('Unexpected error:', err);
     }
-    socket.join(userId);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
   });
 });
 
+server.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
 // Error Handling
 app.use((err, req, res, next) => {
   console.error(err.stack);
