@@ -23,7 +23,7 @@ console.log('Express app created');
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:3000', process.env.EXPO_APP_URL],
+    origin: ['http://localhost:3000', 'https://dropme-backend.onrender.com', process.env.EXPO_APP_URL],
     methods: ['GET', 'POST'],
   },
 });
@@ -33,7 +33,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 console.log(supabase);
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3000', process.env.EXPO_APP_URL],
+  origin: ['http://localhost:3000', 'https://dropme-backend.onrender.com', process.env.EXPO_APP_URL],
   methods: ['GET', 'POST'],
 }));
 app.use(helmet());
