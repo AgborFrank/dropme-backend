@@ -21,21 +21,28 @@ console.log('Environment variables:', {
 const app = express();
 console.log('Express app created');
 const server = http.createServer(app);
+const allowedOrigins = [
+  'http://localhost:3000',           // Local Next.js (if applicable)
+  process.env.EXPO_APP_URL,          // Expo app (from .env or Render)
+  'https://dropme-backend.onrender.com' // Deployed backend
+].filter(Boolean); // Remove undefined values
+
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:3000', 'https://dropme-backend.onrender.com', process.env.EXPO_APP_URL],
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
   },
 });
 
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ['GET', 'POST'],
+}));
+
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 console.log(supabase);
-// Middleware
-app.use(cors({
-  origin: ['http://localhost:3000', 'https://dropme-backend.onrender.com', process.env.EXPO_APP_URL],
-  methods: ['GET', 'POST'],
-}));
+
 app.use(helmet());
 app.use(express.json());
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
