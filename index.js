@@ -41,7 +41,6 @@ app.use(cors(corsOptions));
 app.use(helmet());
 app.use(express.json());
 app.use(rateLimit({ windowMs: 60 * 1000, max: 60 })); // 60 requests per minute
-app.get('/health', (req, res) => res.send('OK')); // Added health check
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
@@ -61,14 +60,14 @@ io.on('connection', (socket) => {
 
   socket.on('updateLocation', async (data) => {
     console.log('Received updateLocation:', data);
-    const { userId, lat, lng, userType } = data;
+    const { userId, lat, lng, role } = data;
 
     try {
       if (!userId || isNaN(lat) || isNaN(lng)) {
         throw new Error('Invalid updateLocation data');
       }
 
-      const validRole = userType === 'driver' || userType === 'rider' ? userType : 'rider';
+      const validRole = role === 'driver' || role === 'rider' ? role : 'rider';
       const point = `POINT(${lng} ${lat})`; // longitude first, then latitude
 
       const { error } = await supabase
@@ -77,7 +76,7 @@ io.on('connection', (socket) => {
           {
             user_id: userId,
             location: point,
-            userType: validRole,
+            role: validRole,
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'user_id' }
@@ -88,7 +87,7 @@ io.on('connection', (socket) => {
         throw error;
       }
 
-      console.log(`Saved location for ${validuserType} ${userId}`);
+      console.log(`Saved location for ${validRole} ${userId}`);
     } catch (err) {
       console.error('Unexpected error in updateLocation:', err.message);
     }
@@ -110,7 +109,7 @@ io.on('connection', (socket) => {
         .upsert({
           user_id: riderId,
           location: riderPoint,
-          userType: 'rider',
+          role: 'rider',
           updated_at: new Date().toISOString(),
         });
 
@@ -121,7 +120,7 @@ io.on('connection', (socket) => {
       const { data, error } = await supabase
         .from('user_locations')
         .select('user_id, location')
-        .eq('userType', 'driver')
+        .eq('role', 'driver')
         .not('user_id', 'eq', riderId)
         .gt('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString())
         .select(`*, distance:st_distance(location, ST_GeomFromText('${riderPoint}', 4326))`)
