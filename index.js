@@ -57,26 +57,31 @@ io.on('connection', (socket) => {
 
   socket.on('updateLocation', async (data) => {
     console.log('Received updateLocation:', data);
-    const { userId, lat, lng } = data;
+    const { userId, lat, lng, userType } = data;
 
     try {
-      // Format coordinates as a PostGIS POINT
-      const point = `POINT(${lng} ${lat})`; // Note: lng first, then lat (x, y order)
+      // Validate role
+      const validRole = userType === 'driver' || userType === 'rider' ? userType : 'rider'; // Default to rider if invalid
+      const point = `POINT(${lng} ${lat})`;
 
       const { error } = await supabase
-        .from('driver_locations')
-        .insert({
-          user_id: userId,
-          location: point, // Assuming column name is 'location'
-          updated_at: new Date().toISOString(),
-        });
+        .from('user_locations') // Updated table name
+        .upsert(
+          {
+            user_id: userId,
+            location: point,
+            userType: validRole,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' } // Update if user_id already exists
+        );
 
       if (error) {
-        console.error('Error saving location:', error);
-        throw error; // Log the full error for debugging
-      } else {
-        console.log(`Saved location for user ${userId}`);
+        console.error('Supabase insert error:', error);
+        throw error;
       }
+
+      console.log(`Saved location for ${validRole} ${userId}`);
     } catch (err) {
       console.error('Unexpected error:', err);
     }
@@ -85,6 +90,41 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
+});
+
+
+socket.on('requestNearbyDrivers', async (riderData) => {
+  const { userId: riderId, lat, lng } = riderData;
+  const riderPoint = `POINT(${lng} ${lat})`;
+
+  // Save rider location
+  await supabase.from('user_locations').upsert({
+    user_id: riderId,
+    location: riderPoint,
+    userType: 'rider',
+    updated_at: new Date().toISOString(),
+  });
+
+  // Fetch nearby drivers (within 10km, example)
+  const { data, error } = await supabase
+    .from('user_locations')
+    .select('user_id, location')
+    .eq('userType', 'driver')
+    .not('user_id', 'eq', riderId) // Exclude the rider
+    .lt('updated_at', new Date(Date.now() - 5 * 60 * 1000)) // Only recent locations (last 5 mins)
+    .select(`*, distance:st_distance(location, ST_GeomFromText('${riderPoint}', 4326))`)
+    .lte('distance', 10000); // 10km radius
+
+  if (error) {
+    console.error('Error fetching drivers:', error);
+    return;
+  }
+
+  socket.emit('nearbyDrivers', data);
+});
+
+server.listen(3000, () => {
+  console.log('Server running on port 3000');
 });
 
 server.listen(3000, () => {
