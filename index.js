@@ -41,6 +41,7 @@ app.use(cors(corsOptions));
 app.use(helmet());
 app.use(express.json());
 app.use(rateLimit({ windowMs: 60 * 1000, max: 60 })); // 60 requests per minute
+app.get('/health', (req, res) => res.send('OK')); // Added health check
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
@@ -55,40 +56,39 @@ app.get('/', (req, res) => res.send('Car Hailing Backend'));
 const io = new Server(server, {
   cors: corsOptions,
 });
-
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.on('updateLocation', async (data) => {
     console.log('Received updateLocation:', data);
-    const { userId, lat, lng, role } = data; 
+    const { userId, lat, lng, userType } = data;
 
     try {
       if (!userId || isNaN(lat) || isNaN(lng)) {
         throw new Error('Invalid updateLocation data');
       }
 
-      const validRole = role === 'driver' || role === 'rider' ? role : 'rider';
-      const point = `ST_GeomFromText('POINT(${lng} ${lat})', 4326)`;
+      const validRole = userType === 'driver' || userType === 'rider' ? userType : 'rider';
+      const point = `POINT(${lng} ${lat})`; // longitude first, then latitude
 
       const { error } = await supabase
         .from('user_locations')
         .upsert(
-          [{ 
-            user_id: userId, 
-            location: supabase.raw(point), 
-            role: validRole, 
-            updated_at: new Date().toISOString() 
-          }],
-          { onConflict: ['user_id'] }
+          {
+            user_id: userId,
+            location: point,
+            userType: validRole,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' }
         );
 
       if (error) {
-        console.error('Supabase insert error:', error);
+        console.error('Supabase upsert error:', error);
         throw error;
       }
 
-      console.log(`Saved location for ${validRole} ${userId}`);
+      console.log(`Saved location for ${validuserType} ${userId}`);
     } catch (err) {
       console.error('Unexpected error in updateLocation:', err.message);
     }
@@ -103,33 +103,29 @@ io.on('connection', (socket) => {
         throw new Error('Invalid riderData');
       }
 
-      const riderPoint = `ST_GeomFromText('POINT(${lng} ${lat})', 4326)`;
+      const riderPoint = `POINT(${lng} ${lat})`;
 
-      // Save rider location
       const { error: upsertError } = await supabase
         .from('user_locations')
-        .upsert(
-          [{ 
-            user_id: riderId, 
-            location: supabase.raw(riderPoint), 
-            role: 'rider', 
-            updated_at: new Date().toISOString() 
-          }],
-          { onConflict: ['user_id'] }
-        );
+        .upsert({
+          user_id: riderId,
+          location: riderPoint,
+          userType: 'rider',
+          updated_at: new Date().toISOString(),
+        });
 
       if (upsertError) {
         throw upsertError;
       }
 
-      // Fetch nearby drivers (within 10km)
       const { data, error } = await supabase
         .from('user_locations')
-        .select(`user_id, location, ST_DistanceSphere(location, ${supabase.raw(riderPoint)}) as distance`)
-        .eq('role', 'driver')
+        .select('user_id, location')
+        .eq('userType', 'driver')
         .not('user_id', 'eq', riderId)
-        .gt('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString()) // Last 5 mins
-        .lte('distance', 10000); // 10km radius
+        .gt('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString())
+        .select(`*, distance:st_distance(location, ST_GeomFromText('${riderPoint}', 4326))`)
+        .lte('distance', 10000);
 
       if (error) {
         console.error('Error fetching drivers:', error);
@@ -147,6 +143,7 @@ io.on('connection', (socket) => {
     console.log('Client disconnected:', socket.id);
   });
 });
+
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
