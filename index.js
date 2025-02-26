@@ -7,6 +7,8 @@ const { Server } = require('socket.io');
 const http = require('http');
 const authRoutes = require('./auth'); // Adjust path if needed
 const rideRoutes = require('./rides'); // Adjust path if needed
+const { v4: uuidv4 } = require('uuid'); // Add this import at the top
+
 
 require('dotenv').config();
 console.log('Starting server...');
@@ -53,11 +55,6 @@ console.log('Supabase client initialized');
 app.use('/api/auth', authRoutes);
 app.use('/api/rides', rideRoutes);
 app.get('/', (req, res) => res.send('Car Hailing Backend'));
-
-// Socket.IO setup
-const io = new Server(server, {
-  cors: corsOptions,
-});
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
@@ -143,6 +140,96 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('newRideRequest', async (request) => {
+    try {
+      const rideRequest = {
+        id: uuidv4(),
+        passenger: request.passenger || "John Doe",
+        rating: request.rating || 4.8,
+        pickup: request.pickup || { lat: 37.78825, lng: -122.4324, location: "Downtown" },
+        dropoff: request.dropoff || { lat: 37.6213, lng: -122.3790, location: "Airport" },
+        fare: request.fare || 25,
+        eta: request.eta || 7,
+        rider_id: request.riderId,
+        status: 'pending',
+      };
+
+      const { error } = await supabase
+        .from('ride_requests')
+        .insert(rideRequest);
+
+      if (error) {
+        console.error('Error saving ride request:', error);
+        throw error;
+      }
+
+      io.emit('rideRequest', rideRequest);
+      console.log('Emitted rideRequest:', rideRequest);
+    } catch (err) {
+      console.error('Error in newRideRequest:', err.message);
+    }
+  });
+
+  socket.on('acceptRide', async (data) => {
+    const { driverId, requestId } = data;
+    try {
+      if (!driverId || !requestId) {
+        throw new Error('Invalid acceptRide data');
+      }
+
+      const { data: request, error } = await supabase
+        .from('ride_requests')
+        .update({ status: 'accepted', driver_id: driverId })
+        .eq('id', requestId)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error updating ride request:', error);
+        throw error;
+      }
+
+      const tripUpdate = {
+        id: requestId,
+        driverId,
+        passenger: request.passenger,
+        pickup: request.pickup,
+        dropoff: request.dropoff,
+        fare: request.fare,
+        status: "accepted",
+      };
+
+      io.emit('tripUpdate', tripUpdate);
+      console.log('Emitted tripUpdate:', tripUpdate);
+    } catch (err) {
+      console.error('Error in acceptRide:', err.message);
+    }
+  });
+
+  socket.on('declineRide', async (data) => {
+    const { driverId, requestId } = data;
+    try {
+      if (!driverId || !requestId) {
+        throw new Error('Invalid declineRide data');
+      }
+
+      const { error } = await supabase
+        .from('ride_requests')
+        .update({ status: 'declined' })
+        .eq('id', requestId);
+
+      if (error) {
+        console.error('Error declining ride request:', error);
+        throw error;
+      }
+
+      console.log(`Ride ${requestId} declined by driver ${driverId}`);
+      // Optionally notify rider or other drivers
+    } catch (err) {
+      console.error('Error in declineRide:', err.message);
+    }
+  });
+
   socket.on('getDriverStatus', async (data) => {
     const { driverId } = data;
     try {
@@ -176,14 +263,14 @@ io.on('connection', (socket) => {
             id: driverId,
             status: status,
           },
-          { onConflict: 'id' } // Specify the conflict key (id) to update if exists
+          { onConflict: 'id' }
         );
-  
+
       if (error) {
         console.error('Error upserting driver status:', error);
         throw error;
       }
-  
+
       console.log(`Driver ${driverId} set to ${status}`);
     } catch (err) {
       console.error('Error in updateDriverStatus:', err.message);
@@ -194,7 +281,6 @@ io.on('connection', (socket) => {
     console.log('Client disconnected:', socket.id);
   });
 });
-
 // Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
