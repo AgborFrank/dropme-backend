@@ -114,7 +114,7 @@ io.on('connection', (socket) => {
             role: 'rider',
             updated_at: new Date().toISOString(),
           },
-          { onConflict: 'user_id' } // Add this
+          { onConflict: 'user_id' }
         );
   
       if (upsertError) {
@@ -122,14 +122,12 @@ io.on('connection', (socket) => {
       }
   
       const { data, error } = await supabase
-        .from('user_locations')
-        .select('user_id, location, distance:st_distance(location, ST_GeomFromText($1, 4326))', {
-          1: riderPoint,
+        .rpc('get_nearby_drivers', {
+          rider_lat: lat,
+          rider_lng: lng,
+          max_distance: 10000, // 10km in meters
         })
-        .eq('role', 'driver')
-        .not('user_id', 'eq', riderId)
-        .gt('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString())
-        .lte('distance', 10000);
+        .neq('user_id', riderId); // Exclude the rider
   
       if (error) {
         console.error('Error fetching drivers:', error);
