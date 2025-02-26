@@ -171,14 +171,19 @@ io.on('connection', (socket) => {
     try {
       const { error } = await supabase
         .from('drivers')
-        .update({ status })
-        .eq('id', driverId);
-
+        .upsert(
+          {
+            id: driverId,
+            status: status,
+          },
+          { onConflict: 'id' } // Specify the conflict key (id) to update if exists
+        );
+  
       if (error) {
-        console.error('Error updating driver status:', error);
+        console.error('Error upserting driver status:', error);
         throw error;
       }
-
+  
       console.log(`Driver ${driverId} set to ${status}`);
     } catch (err) {
       console.error('Error in updateDriverStatus:', err.message);
