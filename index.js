@@ -62,15 +62,15 @@ io.on('connection', (socket) => {
   socket.on('updateLocation', async (data) => {
     console.log('Received updateLocation:', data);
     const { userId, lat, lng, role } = data;
-
+  
     try {
       if (!userId || isNaN(lat) || isNaN(lng)) {
         throw new Error('Invalid updateLocation data');
       }
-
+  
       const validRole = ['driver', 'rider'].includes(role) ? role : 'rider';
       const point = `POINT(${lng} ${lat})`; // longitude first, then latitude
-
+  
       const { error } = await supabase
         .from('user_locations')
         .upsert(
@@ -82,12 +82,12 @@ io.on('connection', (socket) => {
           },
           { onConflict: 'user_id' }
         );
-
+  
       if (error) {
         console.error('Supabase upsert error:', error);
         throw error;
       }
-
+  
       console.log(`Saved location for ${validRole} ${userId}`);
     } catch (err) {
       console.error('Unexpected error in updateLocation:', err.message);
@@ -97,27 +97,30 @@ io.on('connection', (socket) => {
   socket.on('requestNearbyDrivers', async (riderData) => {
     console.log('Received requestNearbyDrivers:', riderData);
     const { userId: riderId, lat, lng } = riderData;
-
+  
     try {
       if (!riderId || isNaN(lat) || isNaN(lng)) {
         throw new Error('Invalid riderData');
       }
-
+  
       const riderPoint = `POINT(${lng} ${lat})`;
-
+  
       const { error: upsertError } = await supabase
         .from('user_locations')
-        .upsert({
-          user_id: riderId,
-          location: riderPoint,
-          role: 'rider',
-          updated_at: new Date().toISOString(),
-        });
-
+        .upsert(
+          {
+            user_id: riderId,
+            location: riderPoint,
+            role: 'rider',
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' } // Add this
+        );
+  
       if (upsertError) {
         throw upsertError;
       }
-
+  
       const { data, error } = await supabase
         .from('user_locations')
         .select('user_id, location, distance:st_distance(location, ST_GeomFromText($1, 4326))', {
@@ -126,13 +129,13 @@ io.on('connection', (socket) => {
         .eq('role', 'driver')
         .not('user_id', 'eq', riderId)
         .gt('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString())
-        .lte('distance', 10000); // 10km radius
-
+        .lte('distance', 10000);
+  
       if (error) {
         console.error('Error fetching drivers:', error);
         throw error;
       }
-
+  
       socket.emit('nearbyDrivers', data);
       console.log('Sent nearbyDrivers:', data);
     } catch (err) {
