@@ -25,20 +25,19 @@ const server = http.createServer(app);
 
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://dropme-backend.onrender.com', // Your Render URL
-  ...(process.env.EXPO_APP_URL ? [process.env.EXPO_APP_URL] : []),
-];
+  process.env.EXPO_APP_URL || 'exp://.*', // Allow all Expo tunnel URLs
+  'https://dropme-backend.onrender.com'  // Your Render URL
+].filter(Boolean);
 
 // CORS Configuration
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.some((o) => origin === o) || /^exp:\/\/.+/.test(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+    if (!origin || allowedOrigins.some((o) => origin.startsWith(o))) {
+      return callback(null, true);
     }
+    callback(new Error('Not allowed by CORS'));
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST'],
 };
 
 app.use(cors(corsOptions));
