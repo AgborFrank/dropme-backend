@@ -24,7 +24,7 @@ for (const envVar of requiredEnvVars) {
 
 const app = express();
 const server = http.createServer(app);
-
+const io = new Server(server);
 const allowedOrigins = [
   'http://localhost:3000',
   process.env.EXPO_APP_URL || 'exp://.*', // Allow all Expo tunnel URLs
