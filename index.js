@@ -152,6 +152,8 @@ io.on('connection', (socket) => {
         eta: request.eta || 7,
         rider_id: request.riderId,
         status: 'pending',
+        created_at: new Date().toISOString(),
+        ridetype: request.ridetype,
       };
 
       const { error } = await supabase
