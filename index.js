@@ -121,13 +121,12 @@ io.on('connection', (socket) => {
         throw upsertError;
       }
   
-      const { data, error } = await supabase
-        .rpc('get_nearby_drivers', {
-          rider_lat: lat,
-          rider_lng: lng,
-          max_distance: 10000, // 10km in meters
-        })
-        .neq('user_id', riderId); // Exclude the rider
+      const { data, error } = await supabase.rpc('get_nearby_drivers', {
+        rider_lat: lat,
+        rider_lng: lng,
+        max_distance: 10000,
+        rider_id: riderId, // Now UUID
+      });
   
       if (error) {
         console.error('Error fetching drivers:', error);
