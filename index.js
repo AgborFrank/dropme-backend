@@ -11,10 +11,13 @@ const rideRoutes = require('./rides'); // Adjust path if needed
 require('dotenv').config();
 console.log('Starting server...');
 
-// Ensure required environment variables are set
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-  console.error('Missing Supabase environment variables');
-  process.exit(1);
+// Validate environment variables
+const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_KEY', 'PORT'];
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.error(`Missing environment variable: ${envVar}`);
+    process.exit(1);
+  }
 }
 
 const app = express();
@@ -22,19 +25,20 @@ const server = http.createServer(app);
 
 const allowedOrigins = [
   'http://localhost:3000',
-  process.env.EXPO_APP_URL || 'exp://.*', // Allow all Expo tunnel URLs
-  'https://dropme-backend.onrender.com'  // Your Render URL
-].filter(Boolean);
+  'https://dropme-backend.onrender.com', // Your Render URL
+  ...(process.env.EXPO_APP_URL ? [process.env.EXPO_APP_URL] : []),
+];
 
 // CORS Configuration
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.some((o) => origin.startsWith(o))) {
-      return callback(null, true);
+    if (!origin || allowedOrigins.some((o) => origin === o) || /^exp:\/\/.+/.test(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
     }
-    callback(new Error('Not allowed by CORS'));
   },
-  methods: ['GET', 'POST'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
 };
 
 app.use(cors(corsOptions));
@@ -55,6 +59,7 @@ app.get('/', (req, res) => res.send('Car Hailing Backend'));
 const io = new Server(server, {
   cors: corsOptions,
 });
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
@@ -67,7 +72,7 @@ io.on('connection', (socket) => {
         throw new Error('Invalid updateLocation data');
       }
 
-      const validRole = role === 'driver' || role === 'rider' ? role : 'rider';
+      const validRole = ['driver', 'rider'].includes(role) ? role : 'rider';
       const point = `POINT(${lng} ${lat})`; // longitude first, then latitude
 
       const { error } = await supabase
@@ -119,12 +124,13 @@ io.on('connection', (socket) => {
 
       const { data, error } = await supabase
         .from('user_locations')
-        .select('user_id, location')
+        .select('user_id, location, distance:st_distance(location, ST_GeomFromText($1, 4326))', {
+          1: riderPoint,
+        })
         .eq('role', 'driver')
         .not('user_id', 'eq', riderId)
         .gt('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString())
-        .select(`*, distance:st_distance(location, ST_GeomFromText('${riderPoint}', 4326))`)
-        .lte('distance', 10000);
+        .lte('distance', 10000); // 10km radius
 
       if (error) {
         console.error('Error fetching drivers:', error);
@@ -138,16 +144,57 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('getDriverStatus', async (data) => {
+    const { driverId } = data;
+    try {
+      const { data: driverData, error } = await supabase
+        .from('drivers')
+        .select('status')
+        .eq('id', driverId)
+        .single();
+
+      if (error) {
+        console.error('Error fetching driver status:', error);
+        throw error;
+      }
+
+      const status = driverData?.status || 'offline';
+      socket.emit('driverStatus', { driverId, status });
+      console.log(`Sent status ${status} for driver ${driverId}`);
+    } catch (err) {
+      console.error('Error in getDriverStatus:', err.message);
+      socket.emit('driverStatus', { driverId, status: 'offline' });
+    }
+  });
+
+  socket.on('updateDriverStatus', async (data) => {
+    const { driverId, status } = data;
+    try {
+      const { error } = await supabase
+        .from('drivers')
+        .update({ status })
+        .eq('id', driverId);
+
+      if (error) {
+        console.error('Error updating driver status:', error);
+        throw error;
+      }
+
+      console.log(`Driver ${driverId} set to ${status}`);
+    } catch (err) {
+      console.error('Error in updateDriverStatus:', err.message);
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
 });
 
-
 // Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).send('Something went wrong!');
+  res.status(500).json({ error: 'Something went wrong!' });
 });
 
 // Start Server
