@@ -62,32 +62,20 @@ io.on('connection', (socket) => {
   socket.on('updateLocation', async (data) => {
     console.log('Received updateLocation:', data);
     const { userId, lat, lng, role } = data;
-  
     try {
       if (!userId || isNaN(lat) || isNaN(lng)) {
         throw new Error('Invalid updateLocation data');
       }
-  
       const validRole = ['driver', 'rider'].includes(role) ? role : 'rider';
-      const point = `POINT(${lng} ${lat})`; // longitude first, then latitude
-  
       const { error } = await supabase
-        .from('user_locations')
-        .upsert(
-          {
-            user_id: userId,
-            location: point,
-            role: validRole,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'user_id' }
-        );
-  
-      if (error) {
-        console.error('Supabase upsert error:', error);
-        throw error;
-      }
-  
+        .rpc('upsert_user_location', {
+          p_user_id: userId,
+          p_lat: lat,
+          p_lng: lng,
+          p_role: validRole,
+          p_updated_at: new Date().toISOString(),
+        });
+      if (error) throw error;
       console.log(`Saved location for ${validRole} ${userId}`);
     } catch (err) {
       console.error('Unexpected error in updateLocation:', err.message);
@@ -97,42 +85,27 @@ io.on('connection', (socket) => {
   socket.on('requestNearbyDrivers', async (riderData) => {
     console.log('Received requestNearbyDrivers:', riderData);
     const { userId: riderId, lat, lng } = riderData;
-  
     try {
       if (!riderId || isNaN(lat) || isNaN(lng)) {
         throw new Error('Invalid riderData');
       }
-  
-      const riderPoint = `POINT(${lng} ${lat})`;
-  
       const { error: upsertError } = await supabase
-        .from('user_locations')
-        .upsert(
-          {
-            user_id: riderId,
-            location: riderPoint,
-            role: 'rider',
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'user_id' }
-        );
-  
-      if (upsertError) {
-        throw upsertError;
-      }
-  
-      const { data, error } = await supabase.rpc('get_nearby_drivers', {
-        rider_lat: lat,
-        rider_lng: lng,
-        max_distance: 10000,
-        rider_id: riderId, // Now UUID
+        .rpc('upsert_user_location', {
+          p_user_id: riderId,
+          p_lat: lat,
+          p_lng: lng,
+          p_role: 'rider',
+          p_updated_at: new Date().toISOString(),
+        });
+      if (upsertError) throw upsertError;
+      const { data, error } = await supabase.rpc('requestNearbyDrivers', {
+        lat: lat,
+        lon: lng,
       });
-  
       if (error) {
         console.error('Error fetching drivers:', error);
         throw error;
       }
-  
       socket.emit('nearbyDrivers', data);
       console.log('Sent nearbyDrivers:', data);
     } catch (err) {
