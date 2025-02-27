@@ -98,7 +98,7 @@ io.on('connection', (socket) => {
           p_updated_at: new Date().toISOString(),
         });
       if (upsertError) throw upsertError;
-      const { data, error } = await supabase.rpc('requestNearbyDrivers', {
+      const { data, error } = await supabase.rpc('requestnearbydrivers', {
         lat: lat,
         lon: lng,
       });
