@@ -5,10 +5,9 @@ const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
 const { Server } = require('socket.io');
 const http = require('http');
-const authRoutes = require('./auth'); // Adjust path if needed
-const rideRoutes = require('./rides'); // Adjust path if needed
-const { v4: uuidv4 } = require('uuid'); // Add this import at the top
-
+const authRoutes = require('./auth');
+const rideRoutes = require('./rides');
+const { v4: uuidv4 } = require('uuid');
 
 require('dotenv').config();
 console.log('Starting server...');
@@ -27,8 +26,8 @@ const server = http.createServer(app);
 const io = new Server(server);
 const allowedOrigins = [
   'http://localhost:3000',
-  process.env.EXPO_APP_URL || 'exp://.*', // Allow all Expo tunnel URLs
-  'https://dropme-backend.onrender.com'  // Your Render URL
+  process.env.EXPO_APP_URL || 'exp://.*',
+  'https://dropme-backend.onrender.com'
 ].filter(Boolean);
 
 // CORS Configuration
@@ -45,7 +44,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(helmet());
 app.use(express.json());
-app.use(rateLimit({ windowMs: 60 * 1000, max: 60 })); // 60 requests per minute
+app.use(rateLimit({ windowMs: 60 * 1000, max: 60 }));
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
@@ -98,9 +97,10 @@ io.on('connection', (socket) => {
           p_updated_at: new Date().toISOString(),
         });
       if (upsertError) throw upsertError;
-      const { data, error } = await supabase.rpc('requestnearbydrivers', {
+      const { data, error } = await supabase.rpc('nearby_drivers', {
         lat: lat,
-        lon: lng,
+        lng: lng,
+        max_distance: 5000,
       });
       if (error) {
         console.error('Error fetching drivers:', error);
@@ -123,10 +123,12 @@ io.on('connection', (socket) => {
         dropoff: request.dropoff || { lat: 37.6213, lng: -122.3790, location: "Airport" },
         fare: request.fare || 25,
         eta: request.eta || 7,
-        rider_id: request.riderId,
+        rider_id: request.rider_id,
         status: 'pending',
         created_at: new Date().toISOString(),
-        ridetype: request.ridetype,
+        ridetype: request.rideType,
+        booking_date: request.bookingDate || null,
+        passenger_count: request.passengerCount || 1,
       };
 
       const { error } = await supabase
@@ -152,26 +154,28 @@ io.on('connection', (socket) => {
         throw new Error('Invalid acceptRide data');
       }
 
-      const { data: request, error } = await supabase
-        .from('ride_requests')
-        .update({ status: 'accepted', driver_id: driverId })
-        .eq('id', requestId)
-        .select()
-        .single();
+      const response = await fetch(`${BACKEND_URL}/api/rides/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId, driverId }),
+      });
 
-      if (error) {
-        console.error('Error updating ride request:', error);
-        throw error;
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to confirm ride');
       }
 
+      const { ride } = await response.json();
       const tripUpdate = {
         id: requestId,
         driverId,
-        passenger: request.passenger,
-        pickup: request.pickup,
-        dropoff: request.dropoff,
-        fare: request.fare,
-        status: "accepted",
+        rider_id: ride.rider_id,
+        pickup: ride.pickup_location,
+        dropoff: ride.dropoff_location,
+        fare: ride.fare,
+        status: 'accepted',
+        booking_date: ride.booking_date,
+        passenger_count: ride.passenger_count,
       };
 
       io.emit('tripUpdate', tripUpdate);
@@ -199,7 +203,6 @@ io.on('connection', (socket) => {
       }
 
       console.log(`Ride ${requestId} declined by driver ${driverId}`);
-      // Optionally notify rider or other drivers
     } catch (err) {
       console.error('Error in declineRide:', err.message);
     }
@@ -256,6 +259,7 @@ io.on('connection', (socket) => {
     console.log('Client disconnected:', socket.id);
   });
 });
+
 // Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
