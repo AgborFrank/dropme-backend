@@ -27,7 +27,7 @@ const io = new Server(server);
 const allowedOrigins = [
   'http://localhost:3000',
   process.env.EXPO_APP_URL || 'exp://.*',
-  'https://dropme-backend.onrender.com'
+  'https://dropme-backend-s7wz.onrender.com'
 ].filter(Boolean);
 
 // CORS Configuration
@@ -252,6 +252,47 @@ io.on('connection', (socket) => {
       console.log(`Driver ${driverId} set to ${status}`);
     } catch (err) {
       console.error('Error in updateDriverStatus:', err.message);
+    }
+  });
+
+  //Business Creation Logic
+  
+  socket.on('createBusiness', async (businessData) => {
+    try {
+      // Validate required fields
+      if (!businessData.id || !businessData.ownerId || !businessData.name || !businessData.category || !businessData.address || !businessData.coordinates) {
+        socket.emit('error', 'Missing required fields');
+        return;
+      }
+
+      // Insert business data into Supabase
+      const { data, error } = await supabase
+        .from('businesses')
+        .insert([{
+          id: businessData.id,
+          owner_id: businessData.ownerId,
+          name: businessData.name,
+          category: businessData.category,
+          address: businessData.address,
+          coordinates: businessData.coordinates, // JSONB field for { latitude, longitude }
+          contact: businessData.contact || null, // Optional
+          logo: businessData.logo || null, // Optional
+          description: businessData.description || null, // Optional
+        }])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to create business: ' + error.message);
+        return;
+      }
+
+      console.log('Business created:', data);
+      socket.emit('businessCreated', { businessId: data.id });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
     }
   });
 

@@ -23,7 +23,7 @@ const server = http.createServer(app);
 const allowedOrigins = [
   'http://localhost:3000',
   process.env.EXPO_APP_URL || 'exp://.*', // Allow all Expo tunnel URLs
-  'https://dropme-backend.onrender.com'  // Your Render URL
+  'https://dropme-backend-s7wz.onrender.com'  // Your Render URL
 ].filter(Boolean);
 
 // CORS Configuration
