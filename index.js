@@ -256,7 +256,8 @@ io.on('connection', (socket) => {
   });
 
   //Business Creation Logic
-  
+ 
+ 
   socket.on('createBusiness', async (businessData) => {
     try {
       // Validate required fields
@@ -274,10 +275,10 @@ io.on('connection', (socket) => {
           name: businessData.name,
           category: businessData.category,
           address: businessData.address,
-          coordinates: businessData.coordinates, // JSONB field for { latitude, longitude }
-          contact: businessData.contact || null, // Optional
-          logo: businessData.logo || null, // Optional
-          description: businessData.description || null, // Optional
+          coordinates: businessData.coordinates,
+          contact: businessData.contact || null,
+          logo: businessData.logo || null,
+          description: businessData.description || null,
         }])
         .select()
         .single();
@@ -290,6 +291,250 @@ io.on('connection', (socket) => {
 
       console.log('Business created:', data);
       socket.emit('businessCreated', { businessId: data.id });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('addItem', async (itemData) => {
+    try {
+      // Validate required fields
+      if (!itemData.id || !itemData.businessId || !itemData.name || !itemData.price) {
+        socket.emit('error', 'Missing required fields for item');
+        return;
+      }
+
+      // Insert item data into Supabase
+      const { data, error } = await supabase
+        .from('items')
+        .insert([{
+          id: itemData.id,
+          business_id: itemData.businessId,
+          name: itemData.name,
+          price: itemData.price,
+          image: itemData.image || null,
+          description: itemData.description || null,
+        }])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to add item: ' + error.message);
+        return;
+      }
+
+      console.log('Item added:', data);
+      socket.emit('itemAdded', { itemId: data.id });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('editItem', async (itemData) => {
+    try {
+      // Validate required fields
+      if (!itemData.itemId || !itemData.businessId) {
+        socket.emit('error', 'Missing required fields for editing item');
+        return;
+      }
+
+      // Verify the item exists and belongs to the business
+      const { data: existingItem, error: fetchError } = await supabase
+        .from('items')
+        .select('*')
+        .eq('id', itemData.itemId)
+        .eq('business_id', itemData.businessId)
+        .single();
+
+      if (fetchError || !existingItem) {
+        console.error('Supabase error:', fetchError);
+        socket.emit('error', 'Item not found or does not belong to this business');
+        return;
+      }
+
+      // Update item data in Supabase
+      const { data, error } = await supabase
+        .from('items')
+        .update({
+          name: itemData.name || existingItem.name,
+          price: itemData.price || existingItem.price,
+          image: itemData.image !== undefined ? itemData.image : existingItem.image,
+          description: itemData.description !== undefined ? itemData.description : existingItem.description,
+        })
+        .eq('id', itemData.itemId)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to edit item: ' + error.message);
+        return;
+      }
+
+      console.log('Item edited:', data);
+      socket.emit('itemEdited', { itemId: data.id });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('deleteItem', async (itemData) => {
+    try {
+      // Validate required fields
+      if (!itemData.itemId || !itemData.businessId) {
+        socket.emit('error', 'Missing required fields for deleting item');
+        return;
+      }
+
+      // Verify the item exists and belongs to the business
+      const { data: existingItem, error: fetchError } = await supabase
+        .from('items')
+        .select('*')
+        .eq('id', itemData.itemId)
+        .eq('business_id', itemData.businessId)
+        .single();
+
+      if (fetchError || !existingItem) {
+        console.error('Supabase error:', fetchError);
+        socket.emit('error', 'Item not found or does not belong to this business');
+        return;
+      }
+
+      // Delete item from Supabase
+      const { error } = await supabase
+        .from('items')
+        .delete()
+        .eq('id', itemData.itemId);
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to delete item: ' + error.message);
+        return;
+      }
+
+      console.log('Item deleted:', itemData.itemId);
+      socket.emit('itemDeleted', { itemId: itemData.itemId });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('fetchItems', async (data) => {
+    try {
+      // Validate required fields
+      if (!data.businessId) {
+        socket.emit('error', 'Missing business ID');
+        return;
+      }
+
+      // Fetch items for the business from Supabase
+      const { data: items, error } = await supabase
+        .from('items')
+        .select('*')
+        .eq('business_id', data.businessId);
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to fetch items: ' + error.message);
+        return;
+      }
+
+      console.log('Items fetched:', items);
+      socket.emit('itemsFetched', { items: items || [] });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('fetchOrders', async (data) => {
+    try {
+      if (!data.businessId) {
+        socket.emit('error', 'Missing business ID');
+        return;
+      }
+
+      // Fetch orders for the business
+      const { data: orders, error: ordersError } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('business_id', data.businessId);
+
+      if (ordersError) {
+        console.error('Supabase error:', ordersError);
+        socket.emit('error', 'Failed to fetch orders: ' + ordersError.message);
+        return;
+      }
+
+      // Fetch order items for each order
+      const orderIds = orders.map(order => order.id);
+      const { data: orderItems, error: itemsError } = await supabase
+        .from('order_items')
+        .select('*')
+        .in('order_id', orderIds);
+
+      if (itemsError) {
+        console.error('Supabase error:', itemsError);
+        socket.emit('error', 'Failed to fetch order items: ' + itemsError.message);
+        return;
+      }
+
+      // Combine orders with their items
+      const ordersWithItems = orders.map(order => ({
+        ...order,
+        items: orderItems.filter(item => item.order_id === order.id),
+      }));
+
+      console.log('Orders fetched:', ordersWithItems);
+      socket.emit('ordersFetched', { orders: ordersWithItems });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('updateOrderStatus', async (data) => {
+    try {
+      if (!data.orderId || !data.businessId || !data.status) {
+        socket.emit('error', 'Missing required fields for updating order status');
+        return;
+      }
+
+      // Verify the order exists and belongs to the business
+      const { data: existingOrder, error: fetchError } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('id', data.orderId)
+        .eq('business_id', data.businessId)
+        .single();
+
+      if (fetchError || !existingOrder) {
+        console.error('Supabase error:', fetchError);
+        socket.emit('error', 'Order not found or does not belong to this business');
+        return;
+      }
+
+      // Update order status
+      const { data, error } = await supabase
+        .from('orders')
+        .update({ status: data.status })
+        .eq('id', data.orderId)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to update order status: ' + error.message);
+        return;
+      }
+
+      console.log('Order status updated:', data);
+      socket.emit('orderStatusUpdated', { orderId: data.id, status: data.status });
     } catch (err) {
       console.error('Server error:', err);
       socket.emit('error', 'Server error: ' + err.message);
