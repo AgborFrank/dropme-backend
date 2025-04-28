@@ -459,7 +459,6 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Fetch orders for the business
       const { data: orders, error: ordersError } = await supabase
         .from('orders')
         .select('*')
@@ -471,7 +470,6 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Fetch order items for each order
       const orderIds = orders.map(order => order.id);
       const { data: orderItems, error: itemsError } = await supabase
         .from('order_items')
@@ -484,7 +482,6 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Combine orders with their items
       const ordersWithItems = orders.map(order => ({
         ...order,
         items: orderItems.filter(item => item.order_id === order.id),
@@ -505,7 +502,6 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Verify the order exists and belongs to the business
       const { data: existingOrder, error: fetchError } = await supabase
         .from('orders')
         .select('*')
@@ -519,7 +515,6 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Update order status
       const { data, error } = await supabase
         .from('orders')
         .update({ status: data.status })
@@ -540,6 +535,111 @@ io.on('connection', (socket) => {
       socket.emit('error', 'Server error: ' + err.message);
     }
   });
+
+  socket.on('fetchRestaurants', async (data) => {
+    try {
+      if (!data.category) {
+        socket.emit('error', 'Missing category');
+        return;
+      }
+
+      // Fetch restaurants by category
+      const { data: businesses, error: businessError } = await supabase
+        .from('businesses')
+        .select('*')
+        .eq('category', data.category);
+
+      if (businessError) {
+        console.error('Supabase error:', businessError);
+        socket.emit('error', 'Failed to fetch restaurants: ' + businessError.message);
+        return;
+      }
+
+      // Fetch items for each restaurant
+      const businessIds = businesses.map(business => business.id);
+      const { data: items, error: itemsError } = await supabase
+        .from('items')
+        .select('*')
+        .in('business_id', businessIds);
+
+      if (itemsError) {
+        console.error('Supabase error:', itemsError);
+        socket.emit('error', 'Failed to fetch items: ' + itemsError.message);
+        return;
+      }
+
+      // Combine businesses with their items
+      const restaurants = businesses.map(business => ({
+        id: business.id,
+        name: business.name,
+        address: business.address,
+        coordinates: business.coordinates,
+        items: items.filter(item => item.business_id === business.id),
+      }));
+
+      console.log('Restaurants fetched:', restaurants);
+      socket.emit('restaurantsFetched', { restaurants });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('placeOrder', async (orderData) => {
+    try {
+      if (!orderData.id || !orderData.businessId || !orderData.customerId || !orderData.customerName || !orderData.totalPrice || !orderData.items) {
+        socket.emit('error', 'Missing required fields for placing order');
+        return;
+      }
+
+      // Insert order
+      const { data: order, error: orderError } = await supabase
+        .from('orders')
+        .insert([{
+          id: orderData.id,
+          business_id: orderData.businessId,
+          customer_id: orderData.customerId,
+          customer_name: orderData.customerName,
+          total_price: orderData.totalPrice,
+          status: 'Pending',
+        }])
+        .select()
+        .single();
+
+      if (orderError) {
+        console.error('Supabase error:', orderError);
+        socket.emit('error', 'Failed to place order: ' + orderError.message);
+        return;
+      }
+
+      // Insert order items
+      const orderItems = orderData.items.map(item => ({
+        id: item.id,
+        order_id: orderData.id,
+        item_id: item.itemId,
+        item_name: item.itemName,
+        quantity: item.quantity,
+        price: item.price,
+      }));
+
+      const { error: itemsError } = await supabase
+        .from('order_items')
+        .insert(orderItems);
+
+      if (itemsError) {
+        console.error('Supabase error:', itemsError);
+        socket.emit('error', 'Failed to save order items: ' + itemsError.message);
+        return;
+      }
+
+      console.log('Order placed:', order);
+      socket.emit('orderPlaced', { orderId: order.id });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
