@@ -737,6 +737,32 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('fetchSliderImages', async (data) => {
+    try {
+      if (!data.category) {
+        socket.emit('error', 'Missing category for slider images');
+        return;
+      }
+
+      const { data: images, error } = await supabase
+        .from('slider_images')
+        .select('id, image_url, category')
+        .eq('category', data.category);
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to fetch slider images: ' + error.message);
+        return;
+      }
+
+      console.log('Slider images fetched:', images);
+      socket.emit('sliderImagesFetched', { images: images || [] });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
