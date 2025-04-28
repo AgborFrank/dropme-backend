@@ -585,6 +585,55 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('fetchRestaurants', async (data) => {
+    try {
+      if (!data.category) {
+        socket.emit('error', 'Missing category');
+        return;
+      }
+
+      // Fetch restaurants by category
+      const { data: businesses, error: businessError } = await supabase
+        .from('businesses')
+        .select('*')
+        .eq('category', data.category);
+
+      if (businessError) {
+        console.error('Supabase error:', businessError);
+        socket.emit('error', 'Failed to fetch restaurants: ' + businessError.message);
+        return;
+      }
+
+      // Fetch items for each restaurant
+      const businessIds = businesses.map(business => business.id);
+      const { data: items, error: itemsError } = await supabase
+        .from('items')
+        .select('*')
+        .in('business_id', businessIds);
+
+      if (itemsError) {
+        console.error('Supabase error:', itemsError);
+        socket.emit('error', 'Failed to fetch items: ' + itemsError.message);
+        return;
+      }
+
+      // Combine businesses with their items
+      const restaurants = businesses.map(business => ({
+        id: business.id,
+        name: business.name,
+        address: business.address,
+        coordinates: business.coordinates,
+        items: items.filter(item => item.business_id === business.id),
+      }));
+
+      console.log('Restaurants fetched:', restaurants);
+      socket.emit('restaurantsFetched', { restaurants });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
   socket.on('placeOrder', async (orderData) => {
     try {
       if (!orderData.id || !orderData.businessId || !orderData.customerId || !orderData.customerName || !orderData.totalPrice || !orderData.items) {
