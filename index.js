@@ -763,6 +763,151 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('fetchPastRides', async (data) => {
+    try {
+      if (!data.userId) {
+        socket.emit('error', 'Missing user ID for fetching past rides');
+        return;
+      }
+
+      const { data: rides, error } = await supabase
+        .from('rides')
+        .select(`
+          id,
+          rider_id,
+          driver_id,
+          pickup_location,
+          dropoff_location,
+          status,
+          created_at,
+          distance_km,
+          cost
+        `)
+        .eq('rider_id', data.userId)
+        .eq('status', 'completed')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to fetch past rides: ' + error.message);
+        return;
+      }
+
+      // Transform geography data to lat/lng for frontend
+      const transformedRides = rides.map(ride => ({
+        ...ride,
+        pickup_location: {
+          latitude: ride.pickup_location.coordinates[1],
+          longitude: ride.pickup_location.coordinates[0],
+        },
+        dropoff_location: {
+          latitude: ride.dropoff_location.coordinates[1],
+          longitude: ride.dropoff_location.coordinates[0],
+        },
+      }));
+
+      console.log('Past rides fetched:', transformedRides);
+      socket.emit('pastRidesFetched', { rides: transformedRides || [] });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('fetchActiveRide', async (data) => {
+    try {
+      if (!data.userId) {
+        socket.emit('error', 'Missing user ID for fetching active ride');
+        return;
+      }
+
+      const { data: ride, error } = await supabase
+        .from('rides')
+        .select(`
+          id,
+          rider_id,
+          driver_id,
+          pickup_location,
+          dropoff_location,
+          status,
+          created_at,
+          distance_km,
+          cost
+        `)
+        .eq('rider_id', data.userId)
+        .in('status', ['requested', 'accepted', 'in-progress'])
+        .single();
+
+      if (error && error.code !== 'PGRST116') { // PGRST116 means no rows found
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to fetch active ride: ' + error.message);
+        return;
+      }
+
+      // Transform geography data to lat/lng for frontend
+      const transformedRide = ride ? {
+        ...ride,
+        pickup_location: {
+          latitude: ride.pickup_location.coordinates[1],
+          longitude: ride.pickup_location.coordinates[0],
+        },
+        dropoff_location: {
+          latitude: ride.dropoff_location.coordinates[1],
+          longitude: ride.dropoff_location.coordinates[0],
+        },
+      } : null;
+
+      console.log('Active ride fetched:', transformedRide);
+      socket.emit('activeRideFetched', { ride: transformedRide });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('cancelRide', async (data) => {
+    try {
+      if (!data.rideId || !data.userId) {
+        socket.emit('error', 'Missing required fields for cancelling ride');
+        return;
+      }
+
+      const { data: existingRide, error: fetchError } = await supabase
+        .from('rides')
+        .select('*')
+        .eq('id', data.rideId)
+        .eq('rider_id', data.userId)
+        .in('status', ['requested', 'accepted', 'in-progress'])
+        .single();
+
+      if (fetchError || !existingRide) {
+        console.error('Supabase error:', fetchError);
+        socket.emit('error', 'Ride not found or not cancellable');
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('rides')
+        .update({ status: 'canceled' })
+        .eq('id', data.rideId)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to cancel ride: ' + error.message);
+        return;
+      }
+
+      console.log('Ride cancelled:', data);
+      socket.emit('rideCancelled', { rideId: data.id });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
