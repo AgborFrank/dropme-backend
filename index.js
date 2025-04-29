@@ -923,10 +923,12 @@ io.on('connection', (socket) => {
           rider_id,
           driver_id,
           created_at,
-          rider:users!chats_rider_id_fkey (username),
-          driver:users!chats_driver_id_fkey (username)
+          rider:users!chats_rider_id_fkey (first_name, last_name, avatar),
+          driver:users!chats_driver_id_fkey (first_name, last_name, avatar),
+          messages (content, created_at)
         `)
-        .or(`rider_id.eq.${data.userId},driver_id.eq.${data.userId}`);
+        .or(`rider_id.eq.${data.userId},driver_id.eq.${data.userId}`)
+        .order('created_at', { foreignTable: 'messages', ascending: false });
 
       if (error) {
         console.error('Supabase error:', error);
@@ -934,8 +936,21 @@ io.on('connection', (socket) => {
         return;
       }
 
-      console.log('Chats fetched:', chats);
-      socket.emit('chatsFetched', { chats: chats || [] });
+      // Process chats to include only the latest message
+      const processedChats = chats.map(chat => {
+        const latestMessage = chat.messages.length > 0 ? chat.messages[0] : null;
+        return {
+          ...chat,
+          last_message: latestMessage ? {
+            content: latestMessage.content,
+            created_at: latestMessage.created_at,
+          } : null,
+          messages: undefined, // Remove the messages array to reduce payload size
+        };
+      });
+
+      console.log('Chats fetched:', processedChats);
+      socket.emit('chatsFetched', { chats: processedChats || [] });
     } catch (err) {
       console.error('Server error:', err);
       socket.emit('error', 'Server error: ' + err.message);
@@ -957,7 +972,7 @@ io.on('connection', (socket) => {
           sender_id,
           content,
           created_at,
-          sender:users!messages_sender_id_fkey (username)
+          sender:users!messages_sender_id_fkey (first_name, last_name)
         `)
         .eq('chat_id', data.chatId)
         .order('created_at', { ascending: true });
@@ -996,7 +1011,7 @@ io.on('connection', (socket) => {
           sender_id,
           content,
           created_at,
-          sender:users!messages_sender_id_fkey (username)
+          sender:users!messages_sender_id_fkey (first_name, last_name)
         `)
         .single();
 
@@ -1031,6 +1046,11 @@ io.on('connection', (socket) => {
     socket.leave(`chat_${data.chatId}`);
     console.log(`Socket ${socket.id} left chat_${data.chatId}`);
   });
+
+
+
+
+
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
