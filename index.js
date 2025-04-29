@@ -55,6 +55,48 @@ app.use('/api/auth', authRoutes);
 app.use('/api/rides', rideRoutes);
 app.get('/', (req, res) => res.send('Car Hailing Backend'));
 
+// Add real-time subscription for messages
+supabase
+  .channel('public:messages')
+  .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+    const newMessage = payload.new;
+    console.log('New message detected:', newMessage);
+
+    // Fetch the sender's details
+    supabase
+      .from('users')
+      .select('first_name, last_name')
+      .eq('id', newMessage.sender_id)
+      .single()
+      .then(({ data: sender, error }) => {
+        if (error) {
+          console.error('Error fetching sender:', error);
+          return;
+        }
+
+        const messageWithSender = {
+          ...newMessage,
+          sender: {
+            first_name: sender.first_name,
+            last_name: sender.last_name,
+          },
+        };
+
+        // Emit the new message to all clients in the chat room
+        io.to(`chat_${newMessage.chat_id}`).emit('newMessage', messageWithSender);
+
+        // Emit to the chat list for real-time updates
+        io.emit('chatListUpdate', {
+          chatId: newMessage.chat_id,
+          lastMessage: {
+            content: newMessage.content,
+            created_at: newMessage.created_at,
+          },
+        });
+      });
+  })
+  .subscribe();
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
