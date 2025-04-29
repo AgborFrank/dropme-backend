@@ -908,6 +908,130 @@ io.on('connection', (socket) => {
   });
 
 
+  //Chat Feature
+  socket.on('fetchChats', async (data) => {
+    try {
+      if (!data.userId) {
+        socket.emit('error', 'Missing user ID for fetching chats');
+        return;
+      }
+
+      const { data: chats, error } = await supabase
+        .from('chats')
+        .select(`
+          id,
+          rider_id,
+          driver_id,
+          created_at,
+          rider:users!chats_rider_id_fkey (username),
+          driver:users!chats_driver_id_fkey (username)
+        `)
+        .or(`rider_id.eq.${data.userId},driver_id.eq.${data.userId}`);
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to fetch chats: ' + error.message);
+        return;
+      }
+
+      console.log('Chats fetched:', chats);
+      socket.emit('chatsFetched', { chats: chats || [] });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('fetchMessages', async (data) => {
+    try {
+      if (!data.chatId) {
+        socket.emit('error', 'Missing chat ID for fetching messages');
+        return;
+      }
+
+      const { data: messages, error } = await supabase
+        .from('messages')
+        .select(`
+          id,
+          chat_id,
+          sender_id,
+          content,
+          created_at,
+          sender:users!messages_sender_id_fkey (username)
+        `)
+        .eq('chat_id', data.chatId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to fetch messages: ' + error.message);
+        return;
+      }
+
+      console.log('Messages fetched:', messages);
+      socket.emit('messagesFetched', { messages: messages || [] });
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('sendMessage', async (data) => {
+    try {
+      if (!data.chatId || !data.senderId || !data.content) {
+        socket.emit('error', 'Missing required fields for sending message');
+        return;
+      }
+
+      const { data: message, error } = await supabase
+        .from('messages')
+        .insert([{
+          chat_id: data.chatId,
+          sender_id: data.senderId,
+          content: data.content,
+        }])
+        .select(`
+          id,
+          chat_id,
+          sender_id,
+          content,
+          created_at,
+          sender:users!messages_sender_id_fkey (username)
+        `)
+        .single();
+
+      if (error) {
+        console.error('Supabase error:', error);
+        socket.emit('error', 'Failed to send message: ' + error.message);
+        return;
+      }
+
+      console.log('Message sent:', message);
+      io.to(`chat_${data.chatId}`).emit('newMessage', message);
+    } catch (err) {
+      console.error('Server error:', err);
+      socket.emit('error', 'Server error: ' + err.message);
+    }
+  });
+
+  socket.on('joinChat', (data) => {
+    if (!data.chatId) {
+      socket.emit('error', 'Missing chat ID for joining chat');
+      return;
+    }
+    socket.join(`chat_${data.chatId}`);
+    console.log(`Socket ${socket.id} joined chat_${data.chatId}`);
+  });
+
+  socket.on('leaveChat', (data) => {
+    if (!data.chatId) {
+      socket.emit('error', 'Missing chat ID for leaving chat');
+      return;
+    }
+    socket.leave(`chat_${data.chatId}`);
+    console.log(`Socket ${socket.id} left chat_${data.chatId}`);
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
