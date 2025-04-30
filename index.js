@@ -82,7 +82,7 @@ app.post('/webhook/monetbil', async (req, res) => {
     let dbStatus;
     switch (status.toUpperCase()) {
       case 'SUCCESSFUL':
-        dbStatus = 'completed';
+        dbStatus = 'successful';
         break;
       case 'FAILED':
       case 'CANCELLED':
@@ -111,7 +111,7 @@ app.post('/webhook/monetbil', async (req, res) => {
     console.log('Found transaction:', transaction);
 
     // Prevent reprocessing a completed or failed transaction
-    if (['completed', 'failed'].includes(transaction.status)) {
+    if (['successful', 'failed'].includes(transaction.status)) {
       console.warn(`Transaction ${payment_ref} already processed with status: ${transaction.status}`);
       return res.status(200).json({ success: true, message: 'Transaction already processed', payment_ref, status: transaction.status });
     }
@@ -140,7 +140,7 @@ app.post('/webhook/monetbil', async (req, res) => {
     console.log('Transaction updated:', updatedTransaction);
 
     // If the transaction is completed, update the wallet balance
-    if (dbStatus === 'completed') {
+    if (dbStatus === 'successful') {
       const netAmount = parseFloat(amount) - parseFloat(fee || 0); // Amount after fees
 
       // Fetch the current wallet balance
