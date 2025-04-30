@@ -7,7 +7,7 @@ const { Server } = require('socket.io');
 const http = require('http');
 const authRoutes = require('./auth');
 const rideRoutes = require('./rides');
-const monetbilRoutes = require('./webhook-monetbil');
+//const monetbilRoutes = require('./webhook-monetbil');
 const md5 = require('md5');
 const { v4: uuidv4 } = require('uuid');
 
@@ -201,7 +201,7 @@ app.get('/webhook/monetbil', async (req, res) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/rides', rideRoutes);
-app.use('/api', monetbilRoutes);
+//app.use('/api', monetbilRoutes);
 app.get('/', (req, res) => res.send('Car Hailing Backend'));
 
 // Add real-time subscription for messages
