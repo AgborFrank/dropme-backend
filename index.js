@@ -7,6 +7,7 @@ const { Server } = require('socket.io');
 const http = require('http');
 const authRoutes = require('./auth');
 const rideRoutes = require('./rides');
+const md5 = require('md5');
 const { v4: uuidv4 } = require('uuid');
 
 require('dotenv').config();
@@ -27,7 +28,8 @@ const io = new Server(server);
 const allowedOrigins = [
   'http://localhost:3000',
   process.env.EXPO_APP_URL || 'exp://.*',
-  'https://dropme-backend-s7wz.onrender.com'
+  'https://dropme-backend-s7wz.onrender.com',
+  'https://api.monetbil.com', // Add this
 ].filter(Boolean);
 
 // CORS Configuration
@@ -49,6 +51,136 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 60 }));
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 console.log('Supabase client initialized');
+// Webhook Endpoint for Monetbil Callback
+app.post('/webhook/monetbil', async (req, res) => {
+  try {
+    const payload = req.body;
+    console.log('Received Monetbil callback:', payload);
+
+    // Extract relevant fields from the payload
+    const { payment_ref, status, transaction_id, amount, currency, fee, message, operator, sign, service } = payload;
+
+    if (!payment_ref || !status) {
+      console.error('Missing required fields in callback:', { payment_ref, status });
+      return res.status(400).json({ error: 'Missing payment_ref or status' });
+    }
+
+    // Verify the signature
+    const SERVICE_KEY = process.env.SERVICE_KEY;
+    const dataToSign = `${service}${transaction_id}${amount}${currency}${status}${payment_ref}${SERVICE_KEY}`;
+    const computedSign = md5(dataToSign);
+
+    if (computedSign !== sign) {
+      console.error('Invalid signature:', { computedSign, receivedSign: sign });
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    // Map Monetbil status to our database status
+    let dbStatus;
+    switch (status.toUpperCase()) {
+      case 'SUCCESSFUL':
+        dbStatus = 'completed';
+        break;
+      case 'FAILED':
+      case 'CANCELLED':
+        dbStatus = 'failed';
+        break;
+      case 'PENDING':
+        dbStatus = 'pending';
+        break;
+      default:
+        console.warn('Unknown Monetbil status:', status);
+        dbStatus = 'failed'; // Default to failed for unknown statuses
+    }
+
+    // Find the transaction by payment_ref
+    const { data: transaction, error: fetchError } = await supabase
+      .from('transactions')
+      .select('id, user_id, amount, status')
+      .eq('payment_ref', payment_ref)
+      .single();
+
+    if (fetchError || !transaction) {
+      console.error('Transaction not found or error:', fetchError);
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    // Prevent reprocessing a completed or failed transaction
+    if (['completed', 'failed'].includes(transaction.status)) {
+      console.warn(`Transaction ${payment_ref} already processed with status: ${transaction.status}`);
+      return res.status(200).json({ success: true, message: 'Transaction already processed', payment_ref, status: transaction.status });
+    }
+
+    // Update the transaction with additional details
+    const transactionUpdate = {
+      status: dbStatus,
+      updated_at: new Date().toISOString(),
+      charge: parseFloat(fee || 0),
+      method: `Monetbil (${operator || 'Unknown Operator'})`,
+      description: `Deposit via Mobile Money (Monetbil) - ${message || 'No message provided'}`
+    };
+
+    const { error: updateTransactionError } = await supabase
+      .from('transactions')
+      .update(transactionUpdate)
+      .eq('payment_ref', payment_ref);
+
+    if (updateTransactionError) {
+      console.error('Error updating transaction:', updateTransactionError);
+      return res.status(500).json({ error: 'Failed to update transaction' });
+    }
+
+    // If the transaction is completed, update the wallet balance
+    if (dbStatus === 'completed') {
+      const netAmount = parseFloat(amount) - parseFloat(fee || 0); // Amount after fees
+
+      // Fetch the current wallet balance
+      const { data: wallet, error: fetchWalletError } = await supabase
+        .from('wallets')
+        .select('balance')
+        .eq('user_id', transaction.user_id)
+        .single();
+
+      if (fetchWalletError || !wallet) {
+        console.error('Wallet not found or error:', fetchWalletError);
+        // Rollback the transaction status to failed
+        await supabase
+          .from('transactions')
+          .update({ status: 'failed', description: 'Deposit failed - Wallet not found' })
+          .eq('payment_ref', payment_ref);
+        return res.status(500).json({ error: 'Wallet not found' });
+      }
+
+      // Update the wallet balance
+      const newBalance = parseFloat(wallet.balance || 0) + netAmount;
+      const { error: updateWalletError } = await supabase
+        .from('wallets')
+        .update({
+          balance: newBalance,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', transaction.user_id);
+
+      if (updateWalletError) {
+        console.error('Error updating wallet balance:', updateWalletError);
+        // Rollback the transaction status to failed
+        await supabase
+          .from('transactions')
+          .update({ status: 'failed', description: 'Deposit failed - Could not update wallet balance' })
+          .eq('payment_ref', payment_ref);
+        return res.status(500).json({ error: 'Failed to update wallet balance' });
+      }
+
+      console.log(`Wallet updated for user ${transaction.user_id}: New balance = ${newBalance}`);
+    }
+
+    console.log(`Transaction ${payment_ref} updated to status: ${dbStatus}`);
+    return res.status(200).json({ success: true, payment_ref, status: dbStatus });
+  } catch (error) {
+    console.error('Error processing callback:', error.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 // Routes
 app.use('/api/auth', authRoutes);
