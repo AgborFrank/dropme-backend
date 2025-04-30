@@ -1,0 +1,272 @@
+const express = require('express');
+const router = express.Router();
+const md5 = require('md5');
+const { supabase } = require('./supabase');
+
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Webhook Endpoint for Monetbil Callback
+app.post('/webhook/monetbil', async (req, res) => {
+  try {
+    const payload = req.body;
+    console.log('Received Monetbil callback:', JSON.stringify(payload, null, 2));
+
+    // Extract relevant fields from the payload
+    const { payment_ref, status, transaction_id, amount, currency, fee, message, operator, sign, service } = payload;
+
+    if (!payment_ref || !status) {
+      console.error('Missing required fields in callback:', { payment_ref, status });
+      return res.status(400).json({ error: 'Missing payment_ref or status' });
+    }
+
+    // Verify the signature
+    const SERVICE_KEY = process.env.SERVICE_KEY || "M55rSvthtYGRYp1Nl81o4W9xVUynS97X";
+    const dataToSign = `${service}${transaction_id}${amount}${currency}${status}${payment_ref}${SERVICE_KEY}`;
+    console.log('Signature data:', { service, transaction_id, amount, currency, status, payment_ref, SERVICE_KEY });
+    const computedSign = md5(dataToSign);
+    console.log('Computed sign:', computedSign, 'Received sign:', sign);
+
+    if (computedSign !== sign) {
+      console.error('Invalid signature:', { computedSign, receivedSign: sign });
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    // Map Monetbil status to our database status
+    let dbStatus;
+    switch (status.toUpperCase()) {
+      case 'SUCCESSFUL':
+        dbStatus = 'completed';
+        break;
+      case 'FAILED':
+      case 'CANCELLED':
+        dbStatus = 'failed';
+        break;
+      case 'PENDING':
+        dbStatus = 'pending';
+        break;
+      default:
+        console.warn('Unknown Monetbil status:', status);
+        dbStatus = 'failed';
+    }
+
+    // Find the transaction by payment_ref
+    const { data: transaction, error: fetchError } = await supabase
+      .from('transactions')
+      .select('id, user_id, amount, status')
+      .eq('payment_ref', payment_ref)
+      .single();
+
+    if (fetchError || !transaction) {
+      console.error('Transaction fetch error:', fetchError?.message, fetchError?.details);
+      return res.status(404).json({ error: 'Transaction not found', details: fetchError?.message });
+    }
+
+    console.log('Found transaction:', transaction);
+
+    // Prevent reprocessing a completed or failed transaction
+    if (['completed', 'failed'].includes(transaction.status)) {
+      console.warn(`Transaction ${payment_ref} already processed with status: ${transaction.status}`);
+      return res.status(200).json({ success: true, message: 'Transaction already processed', payment_ref, status: transaction.status });
+    }
+
+    // Update the transaction with additional details
+    const transactionUpdate = {
+      status: dbStatus,
+      updated_at: new Date().toISOString(),
+      charge: parseFloat(fee || 0),
+      method: `Monetbil (${operator || 'Unknown Operator'})`,
+      description: `Deposit via Mobile Money (Monetbil) - ${message || 'No message provided'}`
+    };
+
+    const { data: updatedTransaction, error: updateTransactionError } = await supabase
+      .from('transactions')
+      .update(transactionUpdate)
+      .eq('payment_ref', payment_ref)
+      .select()
+      .single();
+
+    if (updateTransactionError) {
+      console.error('Transaction update failed:', updateTransactionError.message, updateTransactionError.details);
+      return res.status(500).json({ error: 'Failed to update transaction', details: updateTransactionError.message });
+    }
+
+    console.log('Transaction updated:', updatedTransaction);
+
+    // If the transaction is completed, update the wallet balance
+    if (dbStatus === 'completed') {
+      const netAmount = parseFloat(amount) - parseFloat(fee || 0);
+
+      const { data: wallet, error: fetchWalletError } = await supabase
+        .from('wallets')
+        .select('balance')
+        .eq('user_id', transaction.user_id)
+        .single();
+
+      if (fetchWalletError || !wallet) {
+        console.error('Wallet fetch error:', fetchWalletError?.message, fetchWalletError?.details);
+        await supabase
+          .from('transactions')
+          .update({ status: 'failed', description: 'Deposit failed - Wallet not found', updated_at: new Date().toISOString() })
+          .eq('payment_ref', payment_ref);
+        return res.status(500).json({ error: 'Wallet not found', details: fetchWalletError?.message });
+      }
+
+      console.log('Current wallet:', wallet);
+
+      const newBalance = parseFloat(wallet.balance || 0) + netAmount;
+      const { data: updatedWallet, error: updateWalletError } = await supabase
+        .from('wallets')
+        .update({
+          balance: newBalance,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', transaction.user_id)
+        .select()
+        .single();
+
+      if (updateWalletError) {
+        console.error('Wallet update failed:', updateWalletError.message, updateWalletError.details);
+        await supabase
+          .from('transactions')
+          .update({ status: 'failed', description: 'Deposit failed - Could not update wallet balance', updated_at: new Date().toISOString() })
+          .eq('payment_ref', payment_ref);
+        return res.status(500).json({ error: 'Failed to update wallet balance', details: updateWalletError.message });
+      }
+
+      console.log(`Wallet updated for user ${transaction.user_id}: New balance = ${newBalance}`, updatedWallet);
+    }
+
+    console.log(`Transaction ${payment_ref} updated to status: ${dbStatus}`);
+    return res.status(200).json({ success: true, payment_ref, status: dbStatus });
+  } catch (error) {
+    console.error('Error processing callback:', error.message, error.stack);
+    return res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Endpoint to check payment status manually
+app.post('/api/check-payment', async (req, res) => {
+  try {
+    const { payment_ref } = req.body;
+
+    if (!payment_ref) {
+      return res.status(400).json({ error: 'Missing payment_ref' });
+    }
+
+    // Check the transaction in the database first
+    const { data: transaction, error: fetchError } = await supabase
+      .from('transactions')
+      .select('id, user_id, amount, status, payment_ref')
+      .eq('payment_ref', payment_ref)
+      .single();
+
+    if (fetchError || !transaction) {
+      console.error('Transaction fetch error:', fetchError?.message, fetchError?.details);
+      return res.status(404).json({ error: 'Transaction not found', details: fetchError?.message });
+    }
+
+    // If the transaction is already completed or failed, return the status
+    if (['completed', 'failed'].includes(transaction.status)) {
+      return res.status(200).json({ status: transaction.status, message: transaction.description });
+    }
+
+    // Query Monetbil for the payment status
+    const response = await fetch('https://api.monetbil.com/payment/v1/checkPayment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ paymentId: payment_ref }).toString(),
+    });
+
+    const result = await response.json();
+    console.log('Monetbil checkPayment response:', result);
+
+    if (!result || !result.status) {
+      return res.status(500).json({ error: 'Failed to check payment status with Monetbil' });
+    }
+
+    let dbStatus;
+    switch (result.status.toUpperCase()) {
+      case 'SUCCESSFUL':
+        dbStatus = 'completed';
+        break;
+      case 'FAILED':
+      case 'CANCELLED':
+        dbStatus = 'failed';
+        break;
+      case 'PENDING':
+        dbStatus = 'pending';
+        break;
+      default:
+        console.warn('Unknown Monetbil status:', result.status);
+        dbStatus = 'failed';
+    }
+
+    // Update the transaction with the new status
+    const transactionUpdate = {
+      status: dbStatus,
+      updated_at: new Date().toISOString(),
+      description: `Status updated via polling - ${result.message || 'No message provided'}`
+    };
+
+    const { error: updateTransactionError } = await supabase
+      .from('transactions')
+      .update(transactionUpdate)
+      .eq('payment_ref', payment_ref);
+
+    if (updateTransactionError) {
+      console.error('Transaction update failed:', updateTransactionError.message, updateTransactionError.details);
+      return res.status(500).json({ error: 'Failed to update transaction', details: updateTransactionError.message });
+    }
+
+    // If the transaction is completed, update the wallet balance
+    if (dbStatus === 'completed') {
+      const netAmount = parseFloat(result.amount || transaction.amount) - parseFloat(result.fee || 0);
+
+      const { data: wallet, error: fetchWalletError } = await supabase
+        .from('wallets')
+        .select('balance')
+        .eq('user_id', transaction.user_id)
+        .single();
+
+      if (fetchWalletError || !wallet) {
+        console.error('Wallet fetch error:', fetchWalletError?.message, fetchWalletError?.details);
+        await supabase
+          .from('transactions')
+          .update({ status: 'failed', description: 'Deposit failed - Wallet not found', updated_at: new Date().toISOString() })
+          .eq('payment_ref', payment_ref);
+        return res.status(500).json({ error: 'Wallet not found', details: fetchWalletError?.message });
+      }
+
+      const newBalance = parseFloat(wallet.balance || 0) + netAmount;
+      const { error: updateWalletError } = await supabase
+        .from('wallets')
+        .update({
+          balance: newBalance,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', transaction.user_id);
+
+      if (updateWalletError) {
+        console.error('Wallet update failed:', updateWalletError.message, updateWalletError.details);
+        await supabase
+          .from('transactions')
+          .update({ status: 'failed', description: 'Deposit failed - Could not update wallet balance', updated_at: new Date().toISOString() })
+          .eq('payment_ref', payment_ref);
+        return res.status(500).json({ error: 'Failed to update wallet balance', details: updateWalletError.message });
+      }
+
+      console.log(`Wallet updated for user ${transaction.user_id}: New balance = ${newBalance}`);
+    }
+
+    return res.status(200).json({ status: dbStatus, message: result.message || 'Status checked successfully' });
+  } catch (error) {
+    console.error('Error checking payment status:', error.message, error.stack);
+    return res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+module.exports = router;
