@@ -1,19 +1,17 @@
 const express = require('express');
-const router = express.Router();
 const md5 = require('md5');
-const { supabase } = require('./supabase');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 // Webhook Endpoint for Monetbil Callback
 app.post('/webhook/monetbil', async (req, res) => {
   try {
     const payload = req.body;
     console.log('Received Monetbil callback:', JSON.stringify(payload, null, 2));
 
-    // Extract relevant fields from the payload
     const { payment_ref, status, transaction_id, amount, currency, fee, message, operator, sign, service } = payload;
 
     if (!payment_ref || !status) {
@@ -21,7 +19,6 @@ app.post('/webhook/monetbil', async (req, res) => {
       return res.status(400).json({ error: 'Missing payment_ref or status' });
     }
 
-    // Verify the signature
     const SERVICE_KEY = process.env.SERVICE_KEY || "M55rSvthtYGRYp1Nl81o4W9xVUynS97X";
     const dataToSign = `${service}${transaction_id}${amount}${currency}${status}${payment_ref}${SERVICE_KEY}`;
     console.log('Signature data:', { service, transaction_id, amount, currency, status, payment_ref, SERVICE_KEY });
@@ -33,10 +30,10 @@ app.post('/webhook/monetbil', async (req, res) => {
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    // Map Monetbil status to our database status
     let dbStatus;
     switch (status.toUpperCase()) {
       case 'SUCCESSFUL':
+      case 'SUCCESS':
         dbStatus = 'completed';
         break;
       case 'FAILED':
@@ -51,7 +48,6 @@ app.post('/webhook/monetbil', async (req, res) => {
         dbStatus = 'failed';
     }
 
-    // Find the transaction by payment_ref
     const { data: transaction, error: fetchError } = await supabase
       .from('transactions')
       .select('id, user_id, amount, status')
@@ -65,13 +61,11 @@ app.post('/webhook/monetbil', async (req, res) => {
 
     console.log('Found transaction:', transaction);
 
-    // Prevent reprocessing a completed or failed transaction
     if (['completed', 'failed'].includes(transaction.status)) {
       console.warn(`Transaction ${payment_ref} already processed with status: ${transaction.status}`);
       return res.status(200).json({ success: true, message: 'Transaction already processed', payment_ref, status: transaction.status });
     }
 
-    // Update the transaction with additional details
     const transactionUpdate = {
       status: dbStatus,
       updated_at: new Date().toISOString(),
@@ -94,7 +88,6 @@ app.post('/webhook/monetbil', async (req, res) => {
 
     console.log('Transaction updated:', updatedTransaction);
 
-    // If the transaction is completed, update the wallet balance
     if (dbStatus === 'completed') {
       const netAmount = parseFloat(amount) - parseFloat(fee || 0);
 
@@ -108,7 +101,8 @@ app.post('/webhook/monetbil', async (req, res) => {
         console.error('Wallet fetch error:', fetchWalletError?.message, fetchWalletError?.details);
         await supabase
           .from('transactions')
-          .update({ status: 'failed', description: 'Deposit failed - Wallet not found', updated_at: new Date().toISOString() })
+          .update({ status: 'failed', description: 'Deposit failed - Wallet not found', updated_at: new Date().toISOString
+            })
           .eq('payment_ref', payment_ref);
         return res.status(500).json({ error: 'Wallet not found', details: fetchWalletError?.message });
       }
@@ -149,16 +143,15 @@ app.post('/webhook/monetbil', async (req, res) => {
 // Endpoint to check payment status manually
 app.post('/api/check-payment', async (req, res) => {
   try {
-    const { payment_ref } = req.body;
+    const { payment_ref, transaction_id } = req.body;
 
     if (!payment_ref) {
       return res.status(400).json({ error: 'Missing payment_ref' });
     }
 
-    // Check the transaction in the database first
     const { data: transaction, error: fetchError } = await supabase
       .from('transactions')
-      .select('id, user_id, amount, status, payment_ref')
+      .select('id, user_id, amount, status, payment_ref, transaction_id')
       .eq('payment_ref', payment_ref)
       .single();
 
@@ -167,30 +160,50 @@ app.post('/api/check-payment', async (req, res) => {
       return res.status(404).json({ error: 'Transaction not found', details: fetchError?.message });
     }
 
-    // If the transaction is already completed or failed, return the status
     if (['completed', 'failed'].includes(transaction.status)) {
       return res.status(200).json({ status: transaction.status, message: transaction.description });
     }
 
-    // Query Monetbil for the payment status
-    const response = await fetch('https://api.monetbil.com/payment/v1/checkPayment', {
+    const SERVICE_KEY = process.env.SERVICE_KEY || "M55rSvthtYGRYp1Nl81o4W9xVUynS97X";
+    const checkPaymentUrl = `https://api.monetbil.com/v2.1/check/${SERVICE_KEY}`;
+    const paymentId = transaction_id || transaction.transaction_id || payment_ref;
+
+    const response = await fetch(checkPaymentUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: new URLSearchParams({ paymentId: payment_ref }).toString(),
+      body: new URLSearchParams({ transaction_id: paymentId }).toString(),
     });
 
-    const result = await response.json();
-    console.log('Monetbil checkPayment response:', result);
+    console.log('Monetbil checkPayment response status:', response.status);
+    console.log('Monetbil checkPayment response headers:', response.headers);
+
+    const rawResponse = await response.text();
+    console.log('Monetbil checkPayment raw response:', rawResponse);
+
+    if (!response.ok) {
+      return res.status(500).json({ error: `Monetbil API error: ${response.status}`, details: rawResponse });
+    }
+
+    let result;
+    try {
+      result = JSON.parse(rawResponse);
+    } catch (parseError) {
+      console.error('Failed to parse Monetbil response as JSON:', parseError.message);
+      return res.status(500).json({ error: 'Invalid response from Monetbil', details: rawResponse });
+    }
+
+    console.log('Monetbil checkPayment parsed response:', result);
 
     if (!result || !result.status) {
-      return res.status(500).json({ error: 'Failed to check payment status with Monetbil' });
+      return res.status(500).json({ error: 'Failed to check payment status with Monetbil', details: result });
     }
 
     let dbStatus;
     switch (result.status.toUpperCase()) {
       case 'SUCCESSFUL':
+      case 'SUCCESS':
         dbStatus = 'completed';
         break;
       case 'FAILED':
@@ -205,7 +218,6 @@ app.post('/api/check-payment', async (req, res) => {
         dbStatus = 'failed';
     }
 
-    // Update the transaction with the new status
     const transactionUpdate = {
       status: dbStatus,
       updated_at: new Date().toISOString(),
@@ -222,7 +234,6 @@ app.post('/api/check-payment', async (req, res) => {
       return res.status(500).json({ error: 'Failed to update transaction', details: updateTransactionError.message });
     }
 
-    // If the transaction is completed, update the wallet balance
     if (dbStatus === 'completed') {
       const netAmount = parseFloat(result.amount || transaction.amount) - parseFloat(result.fee || 0);
 
@@ -269,4 +280,4 @@ app.post('/api/check-payment', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = app;
