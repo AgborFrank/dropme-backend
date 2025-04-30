@@ -53,7 +53,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 console.log('Supabase client initialized');
 
 // Webhook Endpoint for Monetbil Callback
-app.post('/webhook/monetbil', async (req, res) => {
+app.get('/webhook/monetbil', async (req, res) => {
   try {
     const payload = req.body;
     console.log('Received Monetbil callback:', JSON.stringify(payload, null, 2));
