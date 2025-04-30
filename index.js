@@ -51,11 +51,12 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 60 }));
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 console.log('Supabase client initialized');
+
 // Webhook Endpoint for Monetbil Callback
 app.post('/webhook/monetbil', async (req, res) => {
   try {
     const payload = req.body;
-    console.log('Received Monetbil callback:', payload);
+    console.log('Received Monetbil callback:', JSON.stringify(payload, null, 2));
 
     // Extract relevant fields from the payload
     const { payment_ref, status, transaction_id, amount, currency, fee, message, operator, sign, service } = payload;
@@ -66,9 +67,11 @@ app.post('/webhook/monetbil', async (req, res) => {
     }
 
     // Verify the signature
-    const SERVICE_KEY = process.env.SERVICE_KEY;
+    const SERVICE_KEY = process.env.SERVICE_KEY || "M55rSvthtYGRYp1Nl81o4W9xVUynS97X"; // Fallback for debugging
     const dataToSign = `${service}${transaction_id}${amount}${currency}${status}${payment_ref}${SERVICE_KEY}`;
+    console.log('Signature data:', { service, transaction_id, amount, currency, status, payment_ref, SERVICE_KEY });
     const computedSign = md5(dataToSign);
+    console.log('Computed sign:', computedSign, 'Received sign:', sign);
 
     if (computedSign !== sign) {
       console.error('Invalid signature:', { computedSign, receivedSign: sign });
@@ -101,9 +104,11 @@ app.post('/webhook/monetbil', async (req, res) => {
       .single();
 
     if (fetchError || !transaction) {
-      console.error('Transaction not found or error:', fetchError);
-      return res.status(404).json({ error: 'Transaction not found' });
+      console.error('Transaction fetch error:', fetchError?.message, fetchError?.details);
+      return res.status(404).json({ error: 'Transaction not found', details: fetchError?.message });
     }
+
+    console.log('Found transaction:', transaction);
 
     // Prevent reprocessing a completed or failed transaction
     if (['completed', 'failed'].includes(transaction.status)) {
@@ -120,15 +125,19 @@ app.post('/webhook/monetbil', async (req, res) => {
       description: `Deposit via Mobile Money (Monetbil) - ${message || 'No message provided'}`
     };
 
-    const { error: updateTransactionError } = await supabase
+    const { data: updatedTransaction, error: updateTransactionError } = await supabase
       .from('transactions')
       .update(transactionUpdate)
-      .eq('payment_ref', payment_ref);
+      .eq('payment_ref', payment_ref)
+      .select()
+      .single();
 
     if (updateTransactionError) {
-      console.error('Error updating transaction:', updateTransactionError);
-      return res.status(500).json({ error: 'Failed to update transaction' });
+      console.error('Transaction update failed:', updateTransactionError.message, updateTransactionError.details);
+      return res.status(500).json({ error: 'Failed to update transaction', details: updateTransactionError.message });
     }
+
+    console.log('Transaction updated:', updatedTransaction);
 
     // If the transaction is completed, update the wallet balance
     if (dbStatus === 'completed') {
@@ -142,43 +151,47 @@ app.post('/webhook/monetbil', async (req, res) => {
         .single();
 
       if (fetchWalletError || !wallet) {
-        console.error('Wallet not found or error:', fetchWalletError);
+        console.error('Wallet fetch error:', fetchWalletError?.message, fetchWalletError?.details);
         // Rollback the transaction status to failed
         await supabase
           .from('transactions')
-          .update({ status: 'failed', description: 'Deposit failed - Wallet not found' })
+          .update({ status: 'failed', description: 'Deposit failed - Wallet not found', updated_at: new Date().toISOString() })
           .eq('payment_ref', payment_ref);
-        return res.status(500).json({ error: 'Wallet not found' });
+        return res.status(500).json({ error: 'Wallet not found', details: fetchWalletError?.message });
       }
+
+      console.log('Current wallet:', wallet);
 
       // Update the wallet balance
       const newBalance = parseFloat(wallet.balance || 0) + netAmount;
-      const { error: updateWalletError } = await supabase
+      const { data: updatedWallet, error: updateWalletError } = await supabase
         .from('wallets')
         .update({
           balance: newBalance,
           updated_at: new Date().toISOString(),
         })
-        .eq('user_id', transaction.user_id);
+        .eq('user_id', transaction.user_id)
+        .select()
+        .single();
 
       if (updateWalletError) {
-        console.error('Error updating wallet balance:', updateWalletError);
+        console.error('Wallet update failed:', updateWalletError.message, updateWalletError.details);
         // Rollback the transaction status to failed
         await supabase
           .from('transactions')
-          .update({ status: 'failed', description: 'Deposit failed - Could not update wallet balance' })
+          .update({ status: 'failed', description: 'Deposit failed - Could not update wallet balance', updated_at: new Date().toISOString() })
           .eq('payment_ref', payment_ref);
-        return res.status(500).json({ error: 'Failed to update wallet balance' });
+        return res.status(500).json({ error: 'Failed to update wallet balance', details: updateWalletError.message });
       }
 
-      console.log(`Wallet updated for user ${transaction.user_id}: New balance = ${newBalance}`);
+      console.log(`Wallet updated for user ${transaction.user_id}: New balance = ${newBalance}`, updatedWallet);
     }
 
     console.log(`Transaction ${payment_ref} updated to status: ${dbStatus}`);
     return res.status(200).json({ success: true, payment_ref, status: dbStatus });
   } catch (error) {
-    console.error('Error processing callback:', error.message);
-    return res.status(500).json({ error: 'Internal server error' });
+    console.error('Error processing callback:', error.message, error.stack);
+    return res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 
@@ -1240,3 +1253,4 @@ app.use((err, req, res, next) => {
 // Start Server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+module.exports = app;
