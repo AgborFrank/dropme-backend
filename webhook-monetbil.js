@@ -1,11 +1,10 @@
 const express = require('express');
 const md5 = require('md5');
-const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
 // Webhook Endpoint for Monetbil Callback
 app.post('/webhook/monetbil', async (req, res) => {
   try {
@@ -48,6 +47,7 @@ app.post('/webhook/monetbil', async (req, res) => {
         dbStatus = 'failed';
     }
 
+    const supabase = req.supabase;
     const { data: transaction, error: fetchError } = await supabase
       .from('transactions')
       .select('id, user_id, amount, status')
@@ -101,8 +101,7 @@ app.post('/webhook/monetbil', async (req, res) => {
         console.error('Wallet fetch error:', fetchWalletError?.message, fetchWalletError?.details);
         await supabase
           .from('transactions')
-          .update({ status: 'failed', description: 'Deposit failed - Wallet not found', updated_at: new Date().toISOString
-            })
+          .update({ status: 'failed', description: 'Deposit failed - Wallet not found', updated_at: new Date().toISOString() })
           .eq('payment_ref', payment_ref);
         return res.status(500).json({ error: 'Wallet not found', details: fetchWalletError?.message });
       }
@@ -132,11 +131,15 @@ app.post('/webhook/monetbil', async (req, res) => {
       console.log(`Wallet updated for user ${transaction.user_id}: New balance = ${newBalance}`, updatedWallet);
     }
 
+    // Emit Socket.IO event for real-time update
+    const io = req.app.get('io');
+    io.to(transaction.user_id).emit('transaction_update', { payment_ref, status: dbStatus });
+
     console.log(`Transaction ${payment_ref} updated to status: ${dbStatus}`);
     return res.status(200).json({ success: true, payment_ref, status: dbStatus });
   } catch (error) {
     console.error('Error processing callback:', error.message, error.stack);
-    return res.status(500).json({ error: 'Internal server error', details: error.message });
+    throw error; // Let global error handler catch this
   }
 });
 
@@ -149,6 +152,7 @@ app.post('/api/check-payment', async (req, res) => {
       return res.status(400).json({ error: 'Missing payment_ref' });
     }
 
+    const supabase = req.supabase;
     const { data: transaction, error: fetchError } = await supabase
       .from('transactions')
       .select('id, user_id, amount, status, payment_ref, transaction_id')
@@ -273,10 +277,14 @@ app.post('/api/check-payment', async (req, res) => {
       console.log(`Wallet updated for user ${transaction.user_id}: New balance = ${newBalance}`);
     }
 
+    // Emit Socket.IO event for real-time update
+    const io = req.app.get('io');
+    io.to(transaction.user_id).emit('transaction_update', { payment_ref, status: dbStatus });
+
     return res.status(200).json({ status: dbStatus, message: result.message || 'Status checked successfully' });
   } catch (error) {
     console.error('Error checking payment status:', error.message, error.stack);
-    return res.status(500).json({ error: 'Internal server error', details: error.message });
+    throw error; // Let global error handler catch this
   }
 });
 
