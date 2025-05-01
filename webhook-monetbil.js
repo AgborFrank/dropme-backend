@@ -10,6 +10,7 @@ app.post('/webhook/monetbil', async (req, res) => {
   try {
     const payload = req.body;
     console.log('Received Monetbil callback:', JSON.stringify(payload, null, 2));
+    console.log('Request headers:', req.headers);
 
     const { payment_ref, status, transaction_id, amount, currency, fee, message, operator, sign, service } = payload;
 
@@ -152,6 +153,8 @@ app.post('/api/check-payment', async (req, res) => {
       return res.status(400).json({ error: 'Missing payment_ref' });
     }
 
+    console.log('Checking payment status for:', { payment_ref, transaction_id });
+
     const supabase = req.supabase;
     const { data: transaction, error: fetchError } = await supabase
       .from('transactions')
@@ -165,12 +168,15 @@ app.post('/api/check-payment', async (req, res) => {
     }
 
     if (['completed', 'failed'].includes(transaction.status)) {
+      console.log(`Transaction ${payment_ref} already processed with status: ${transaction.status}`);
       return res.status(200).json({ status: transaction.status, message: transaction.description });
     }
 
     const SERVICE_KEY = process.env.SERVICE_KEY || "M55rSvthtYGRYp1Nl81o4W9xVUynS97X";
     const checkPaymentUrl = `https://api.monetbil.com/v2.1/check/${SERVICE_KEY}`;
     const paymentId = transaction_id || transaction.transaction_id || payment_ref;
+
+    console.log('Checking Monetbil payment status:', { checkPaymentUrl, paymentId });
 
     const response = await fetch(checkPaymentUrl, {
       method: 'POST',
@@ -281,6 +287,7 @@ app.post('/api/check-payment', async (req, res) => {
     const io = req.app.get('io');
     io.to(transaction.user_id).emit('transaction_update', { payment_ref, status: dbStatus });
 
+    console.log(`Transaction ${payment_ref} updated to status: ${dbStatus} via polling`);
     return res.status(200).json({ status: dbStatus, message: result.message || 'Status checked successfully' });
   } catch (error) {
     console.error('Error checking payment status:', error.message, error.stack);
