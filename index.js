@@ -200,22 +200,57 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('newRideRequest', async (request) => {
+  socket.on('newRideRequest', async (rideData) => {
+    console.log('Received newRideRequest:', rideData);
+    const {
+      riderId,
+      rideType,
+      distance, // meters, number
+      cost, // from frontend pricelist.ts
+      passenger = 'John Doe',
+      rating = 4.8,
+      pickup, // { address: string, lat: number, lng: number }
+      dropoff, // { address: string, lat: number, lng: number }
+      eta,
+      duration,
+      bookingDate = null,
+      passengerCount = 1,
+      paymentMethod = 'Cash',
+    } = rideData;
+
     try {
+      // Validate inputs
+      if (!riderId || !rideType || !distance || !cost || !pickup || !dropoff) {
+        throw new Error('Missing required fields: riderId, rideType, distance, cost, pickup, dropoff');
+      }
+      if (typeof cost !== 'number' || cost <= 0) {
+        throw new Error('Invalid cost: must be a positive number');
+      }
+      if (typeof distance !== 'number' || distance <= 0) {
+        throw new Error('Invalid distance: must be a positive number');
+      }
+      if (typeof pickup !== 'object' || typeof dropoff !== 'object') {
+        throw new Error('Invalid pickup or dropoff: must be JSON objects');
+      }
+
       const rideRequest = {
         id: uuidv4(),
-        passenger: request.passenger || "John Doe",
-        rating: request.rating || 4.8,
-        pickup: request.pickup || { lat: 37.78825, lng: -122.4324, location: "Downtown" },
-        dropoff: request.dropoff || { lat: 37.6213, lng: -122.3790, location: "Airport" },
-        fare: request.fare || 25,
-        eta: request.eta || 7,
-        rider_id: request.rider_id,
+        rider_id: riderId,
+        driver_id: null, // Set later in acceptRide
+        passenger,
+        rating,
+        pickup, // jsonb
+        dropoff, // jsonb
+        fare: cost, // real, XAF
+        eta,
         status: 'pending',
         created_at: new Date().toISOString(),
-        ridetype: request.rideType,
-        booking_date: request.bookingDate || null,
-        passenger_count: request.passengerCount || 1,
+        ridetype: rideType,
+        distance: `${distance} m`, // text
+        duration,
+        booking_date: bookingDate,
+        passenger_count: passengerCount,
+        payment_method: paymentMethod,
       };
 
       const { error } = await supabase
@@ -231,16 +266,33 @@ io.on('connection', (socket) => {
       console.log('Emitted rideRequest:', rideRequest);
     } catch (err) {
       console.error('Error in newRideRequest:', err.message);
+      socket.emit('error', { message: 'Failed to create ride request', error: err.message });
     }
   });
 
   socket.on('acceptRide', async (data) => {
+    console.log('Received acceptRide:', data);
     const { driverId, requestId } = data;
+
     try {
       if (!driverId || !requestId) {
-        throw new Error('Invalid acceptRide data');
+        throw new Error('Invalid acceptRide data: driverId and requestId required');
       }
 
+      // Update ride_requests with driver_id and status
+      const { data: ride, error: updateError } = await supabase
+        .from('ride_requests')
+        .update({ driver_id: driverId, status: 'accepted' })
+        .eq('id', requestId)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error('Error updating ride request:', updateError);
+        throw updateError;
+      }
+
+      // Call /api/rides/confirm for additional logic
       const response = await fetch(`${BACKEND_URL}/api/rides/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -252,13 +304,12 @@ io.on('connection', (socket) => {
         throw new Error(errorData.error || 'Failed to confirm ride');
       }
 
-      const { ride } = await response.json();
       const tripUpdate = {
         id: requestId,
         driverId,
         rider_id: ride.rider_id,
-        pickup: ride.pickup_location,
-        dropoff: ride.dropoff_location,
+        pickup: ride.pickup,
+        dropoff: ride.dropoff,
         fare: ride.fare,
         status: 'accepted',
         booking_date: ride.booking_date,
@@ -269,14 +320,17 @@ io.on('connection', (socket) => {
       console.log('Emitted tripUpdate:', tripUpdate);
     } catch (err) {
       console.error('Error in acceptRide:', err.message);
+      socket.emit('error', { message: 'Failed to accept ride', error: err.message });
     }
   });
 
   socket.on('declineRide', async (data) => {
+    console.log('Received declineRide:', data);
     const { driverId, requestId } = data;
+
     try {
       if (!driverId || !requestId) {
-        throw new Error('Invalid declineRide data');
+        throw new Error('Invalid declineRide data: driverId and requestId required');
       }
 
       const { error } = await supabase
@@ -290,10 +344,13 @@ io.on('connection', (socket) => {
       }
 
       console.log(`Ride ${requestId} declined by driver ${driverId}`);
+      socket.emit('rideDeclined', { requestId, driverId });
     } catch (err) {
       console.error('Error in declineRide:', err.message);
+      socket.emit('error', { message: 'Failed to decline ride', error: err.message });
     }
   });
+
 
   socket.on('getDriverStatus', async (data) => {
     const { driverId } = data;
