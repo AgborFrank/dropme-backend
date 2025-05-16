@@ -157,13 +157,17 @@ io.on('connection', (socket) => {
     console.log('Received requestNearbyDrivers:', riderData);
     const { userId: riderId, lat, lng } = riderData;
     try {
-      if (!riderId || isNaN(lat) || isNaN(lng)) {
-        throw new Error('Invalid riderData');
+      // Validate inputs
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!riderId || !uuidRegex.test(riderId) || isNaN(lat) || isNaN(lng)) {
+        throw new Error('Invalid riderData: userId must be a valid UUID, lat/lng must be numbers');
       }
+  
+      // Update rider location
       console.log('Calling upsert_user_location:', { p_user_id: riderId, p_lat: lat, p_lng: lng });
       const { error: upsertError } = await supabase
         .rpc('upsert_user_location', {
-          p_user_id: String(riderId), // Ensure text
+          p_user_id: riderId,
           p_lat: lat,
           p_lng: lng,
           p_role: 'rider',
@@ -173,6 +177,8 @@ io.on('connection', (socket) => {
         console.error('Upsert error:', upsertError);
         throw upsertError;
       }
+  
+      // Fetch nearby drivers
       console.log('Calling nearby_drivers:', { lat, lng, max_distance: 5000 });
       const { data, error } = await supabase.rpc('nearby_drivers', {
         lat: lat,
@@ -183,11 +189,13 @@ io.on('connection', (socket) => {
         console.error('Nearby drivers error:', error);
         throw error;
       }
+  
+      // Emit results
       socket.emit('nearbyDrivers', data);
       console.log('Sent nearbyDrivers:', data);
     } catch (err) {
       console.error('Error in requestNearbyDrivers:', err);
-      socket.emit('error', { message: 'Failed to fetch drivers', error: err });
+      socket.emit('error', { message: 'Failed to fetch drivers', error: err.message });
     }
   });
 
