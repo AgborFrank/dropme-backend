@@ -351,7 +351,18 @@ io.on('connection', (socket) => {
       socket.emit('error', { message: 'Failed to decline ride', error: err.message });
     }
   });
-
+  socket.on("cancelRide", async ({ requestId, reason }) => {
+    try {
+      const { error } = await supabase
+        .from("ride_requests")
+        .update({ status: "canceled", cancellation_reason: reason })
+        .eq("id", requestId);
+      if (error) throw error;
+      io.emit("rideUpdate", { id: requestId, status: "canceled" });
+    } catch (error) {
+      socket.emit("error", { message: "Failed to cancel ride", error });
+    }
+  });
 
   socket.on('getDriverStatus', async (data) => {
     const { driverId } = data;
