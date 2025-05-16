@@ -273,57 +273,106 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('acceptRide', async (data) => {
-    console.log('Received acceptRide:', data);
-    const { driverId, requestId } = data;
-
+  socket.on("acceptRide", async ({ driverId, requestId }) => {
     try {
-      if (!driverId || !requestId) {
-        throw new Error('Invalid acceptRide data: driverId and requestId required');
+      // Fetch ride to validate
+      const { data: ride, error: fetchError } = await supabase
+        .from("ride_requests")
+        .select("*")
+        .eq("id", requestId)
+        .eq("status", "pending")
+        .maybeSingle();
+  
+      if (fetchError) {
+        console.error("Error fetching ride:", fetchError);
+        throw new Error("Database error");
       }
-
-      // Update ride_requests with driver_id and status
-      const { data: ride, error: updateError } = await supabase
-        .from('ride_requests')
-        .update({ driver_id: driverId, status: 'accepted' })
-        .eq('id', requestId)
+  
+      if (!ride) {
+        console.log(`Ride ${requestId} not found or not pending`);
+        socket.emit("error", { message: "Ride not available or already processed" });
+        return;
+      }
+  
+      // Update ride
+      const { data: updatedRide, error: updateError } = await supabase
+        .from("ride_requests")
+        .update({ driver_id: driverId, status: "accepted" })
+        .eq("id", requestId)
+        .eq("status", "pending") // Ensure still pending
         .select()
         .single();
-
+  
       if (updateError) {
-        console.error('Error updating ride request:', updateError);
-        throw updateError;
+        console.error("Error updating ride:", updateError);
+        throw new Error("Failed to accept ride");
       }
-
-      // Call /api/rides/confirm for additional logic
-      const response = await fetch(`${BACKEND_URL}/api/rides/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestId, driverId }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to confirm ride');
-      }
-
-      const tripUpdate = {
+  
+      console.log(`Ride ${requestId} accepted by driver ${driverId}`);
+      io.emit("tripUpdate", {
         id: requestId,
+        rider_id: updatedRide.rider_id,
         driverId,
-        rider_id: ride.rider_id,
-        pickup: ride.pickup,
-        dropoff: ride.dropoff,
-        fare: ride.fare,
-        status: 'accepted',
-        booking_date: ride.booking_date,
-        passenger_count: ride.passenger_count,
-      };
+        status: "accepted",
+        fare: updatedRide.fare,
+        eta: updatedRide.eta,
+        pickup: updatedRide.pickup,
+        dropoff: updatedRide.dropoff,
+      });
+    } catch (error) {
+      console.error("Error in acceptRide:", error.message);
+      socket.emit("error", { message: "Failed to accept ride", error: error.message });
+    }
+  });
 
-      io.emit('tripUpdate', tripUpdate);
-      console.log('Emitted tripUpdate:', tripUpdate);
-    } catch (err) {
-      console.error('Error in acceptRide:', err.message);
-      socket.emit('error', { message: 'Failed to accept ride', error: err.message });
+  socket.on("confirmRide", async ({ driverId, requestId }) => {
+    try {
+      const { data: ride, error: fetchError } = await supabase
+        .from("ride_requests")
+        .select("*")
+        .eq("id", requestId)
+        .eq("status", "accepted")
+        .eq("driver_id", driverId)
+        .maybeSingle();
+  
+      if (fetchError) {
+        console.error("Error fetching ride:", fetchError);
+        throw new Error("Database error");
+      }
+  
+      if (!ride) {
+        console.log(`Ride ${requestId} not found, not accepted, or not assigned to driver ${driverId}`);
+        socket.emit("error", { message: "Ride not available or not assigned" });
+        return;
+      }
+  
+      const { data: updatedRide, error: updateError } = await supabase
+        .from("ride_requests")
+        .update({ status: "confirmed" })
+        .eq("id", requestId)
+        .eq("status", "accepted")
+        .select()
+        .single();
+  
+      if (updateError) {
+        console.error("Error confirming ride:", updateError);
+        throw new Error("Failed to confirm ride");
+      }
+  
+      console.log(`Ride ${requestId} confirmed by driver ${driverId}`);
+      io.emit("tripUpdate", {
+        id: requestId,
+        rider_id: updatedRide.rider_id,
+        driverId,
+        status: "confirmed",
+        fare: updatedRide.fare,
+        eta: updatedRide.eta,
+        pickup: updatedRide.pickup,
+        dropoff: updatedRide.dropoff,
+      });
+    } catch (error) {
+      console.error("Error in confirm ride:", error.message);
+      socket.emit("error", { message: "Failed to confirm ride", error: error.message });
     }
   });
 
