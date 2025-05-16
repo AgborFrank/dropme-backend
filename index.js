@@ -184,6 +184,7 @@ io.on('connection', (socket) => {
         lat: lat,
         lng: lng,
         max_distance: 5000,
+        rider_id: riderId,
       });
       if (error) {
         console.error('Nearby drivers error:', error);
