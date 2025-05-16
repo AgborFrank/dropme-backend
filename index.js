@@ -43,6 +43,8 @@ const io = new Server(server, {
   },
 });
 
+const BACKEND_URL = 'https://dropme-backend-s7wz.onrender.com';
+
 // CORS Configuration
 const corsOptions = {
   origin: (origin, callback) => {
