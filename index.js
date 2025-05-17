@@ -462,7 +462,122 @@ io.on('connection', (socket) => {
     }
   });
 
-  //Business Creation Logic
+
+  // Updated handler for trip update with vehicle and ride type validation
+  socket.on("tripUpdate", async (tripData) => {
+    console.log("Received tripUpdate:", tripData);
+    const { rider_id, driver_id, status } = tripData;
+    try {
+      // Fetch ride request to get rideType
+      const { data: ride, error: rideError } = await supabase
+        .from("ride_requests")
+        .select("ride_type")
+        .eq("rider_id", rider_id)
+        .eq("status", "pending")
+        .single();
+      if (rideError) throw rideError;
+
+      // Validate driver’s vehicle
+      const { data: vehicle, error: vehicleError } = await supabase
+        .from("vehicles")
+        .select("make, model, license_plate, ride_type, status")
+        .eq("driver_id", driver_id)
+        .eq("status", "active")
+        .single();
+      if (vehicleError || !vehicle) {
+        throw new Error("No active vehicle found for driver or vehicle error");
+      }
+      if (vehicle.ride_type !== ride.ride_type) {
+        throw new Error("Vehicle ride type does not match rider request");
+      }
+
+      // Update ride request
+      const { data: updatedRide, error: updateError } = await supabase
+        .from("ride_requests")
+        .update({ status, driver_id })
+        .eq("rider_id", rider_id)
+        .eq("status", "pending")
+        .select()
+        .single();
+      if (updateError) throw updateError;
+
+      // Fetch driver details
+      const { data: driver, error: driverError } = await supabase
+        .from("users")
+        .select("first_name")
+        .eq("id", driver_id)
+        .single();
+      if (driverError) throw driverError;
+
+      const responseRide = {
+        ...updatedRide,
+        driver: {
+          name: driver.first_name,
+          rating: vehicle.rating || 5.0, // Use vehicle rating if available
+          vehicle: `${vehicle.make} ${vehicle.model}`,
+          licensePlate: vehicle.license_plate,
+        },
+      };
+
+      io.emit("tripUpdate", responseRide);
+      console.log("Sent tripUpdate:", responseRide);
+    } catch (err) {
+      console.error("Error in tripUpdate:", err);
+      socket.emit("error", { message: err.message || "Failed to update trip", error: err.message });
+    }
+  });
+
+  // Updated handler for driver location updates
+  socket.on("updateDriverLocation", async (locationData) => {
+    console.log("Received updateDriverLocation:", locationData);
+    const { driverId, lat, lng } = locationData;
+    try {
+      const { error } = await supabase
+        .rpc("upsert_user_location", {
+          p_user_id: driverId,
+          p_lat: lat,
+          p_lng: lng,
+          p_role: "driver",
+          p_updated_at: new Date().toISOString(),
+        });
+      if (error) throw error;
+
+      // Update users.location for consistency (optional)
+      await supabase
+        .from("users")
+        .update({ location: `SRID=4326;POINT(${lng} ${lat})` })
+        .eq("id", driverId);
+
+      io.emit("driverLocation", { driverId, lat, lng });
+      console.log("Sent driverLocation:", { driverId, lat, lng });
+    } catch (err) {
+      console.error("Error in updateDriverLocation:", err);
+      socket.emit("error", { message: "Failed to update driver location", error: err.message });
+    }
+  });
+
+  // Updated handler for chat messages
+  socket.on("newMessage", async (messageData) => {
+    console.log("Received newMessage:", messageData);
+    const { chatId, senderId, content } = messageData;
+    try {
+      const { data, error } = await supabase
+        .from("messages")
+        .insert({
+          chat_id: chatId,
+          sender_id: senderId,
+          content,
+        })
+        .select();
+      if (error) throw error;
+
+      io.emit("newMessage", data[0]);
+      console.log("Sent newMessage:", data[0]);
+    } catch (err) {
+      console.error("Error in newMessage:", err);
+      socket.emit("error", { message: "Failed to send message", error: err.message });
+    }
+  });
  
  
   socket.on('createBusiness', async (businessData) => {
