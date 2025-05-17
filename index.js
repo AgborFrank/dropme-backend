@@ -182,11 +182,11 @@ io.on('connection', (socket) => {
       }
   
       // Fetch nearby drivers
-      console.log('Calling nearby_drivers:', { query_lat: lat, query_lng: lng, max_dist: 5000, rider_id: riderId });
+      console.log('Calling nearby_drivers:', { query_lat: lat, query_lng: lng, max_distance: 5000, rider_id: riderId });
       const { data, error } = await supabase.rpc('nearby_drivers', {
         query_lat: lat,
         query_lng: lng,
-        max_dist: 5000,
+        max_distance: 5000,
         rider_id: riderId,
       });
       if (error) {
